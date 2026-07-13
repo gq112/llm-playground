@@ -865,7 +865,9 @@ const ObservabilityModule = {
             .filter(([key, entry]) => {
                 const isCurrentBackend = key.startsWith(`${backend}:`) || derivedMetrics.includes(key);
                 const isNumeric = Number.isFinite(entry?.value) || Number.isFinite(entry?.p50);
-                return isCurrentBackend && isNumeric && METRIC_REGISTRY[key]?.format !== 'duration_ms';
+                const isLowLevelSeries = entry?.type === 'histogram_bucket'
+                    || /_(?:bucket(?:_le_.*)?|sum|count|created)$/.test(key);
+                return isCurrentBackend && isNumeric && !isLowLevelSeries && METRIC_REGISTRY[key]?.format !== 'duration_ms';
             })
             .map(([key]) => key);
         const allKeys = [...new Set([...registeredKeys, ...discoveredKeys])];
@@ -895,6 +897,7 @@ const ObservabilityModule = {
         picker.innerHTML = html;
         picker.dataset.backend = backend;
         picker.dataset.metricSignature = pickerSignature;
+        this._updateTsPickerSummary();
 
         picker.addEventListener('change', (e) => {
             if (e.target.type !== 'checkbox') return;
@@ -903,8 +906,14 @@ const ObservabilityModule = {
             } else {
                 this._tsSelectedMetrics.delete(e.target.value);
             }
+            this._updateTsPickerSummary();
             this._buildChart();
         });
+    },
+
+    _updateTsPickerSummary() {
+        const count = document.getElementById('obs-ts-picker-count');
+        if (count) count.textContent = `${this._tsSelectedMetrics.size} 项已选`;
     },
 
     async _loadTimeSeries() {

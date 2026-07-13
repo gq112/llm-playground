@@ -676,11 +676,47 @@
     border-color: var(--primary-color);
 }
 
-.obs-ts-picker {
+.obs-ts-metric-picker {
+    position: relative;
+    flex: 1 1 280px;
+    min-width: 230px;
+    max-width: 460px;
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    background: var(--bg-tertiary);
+}
+
+.obs-ts-metric-picker summary {
     display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    flex: 1;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 34px;
+    padding: 0 10px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: .8rem;
+    list-style: none;
+}
+
+.obs-ts-metric-picker summary::-webkit-details-marker { display: none; }
+.obs-ts-metric-picker summary::after { content: '⌄'; font-size: 1rem; transition: transform .15s ease; }
+.obs-ts-metric-picker[open] summary::after { transform: rotate(180deg); }
+
+#obs-ts-picker-count {
+    margin-left: auto;
+    margin-right: 8px;
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.obs-ts-picker {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 8px 12px;
+    max-height: 220px;
+    padding: 10px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border-color);
 }
 
 .obs-ts-picker label {

@@ -22,7 +22,7 @@
     <div class="obs-tabs" id="obs-tabs">
         <button class="obs-tab active" data-obs-tab="overview">Overview</button>
         <button class="obs-tab" data-obs-tab="all-metrics">All Metrics</button>
-        <button class="obs-tab" data-obs-tab="time-series">Time Series</button>
+        <button class="obs-tab" data-obs-tab="time-series">time series</button>
         <button class="obs-tab" data-obs-tab="latency">Latency</button>
     </div>
 
@@ -98,7 +98,10 @@
                 </select>
                 <button class="obs-btn" id="obs-ts-custom-go">Go</button>
             </div>
-            <div class="obs-ts-picker" id="obs-ts-picker"></div>
+            <details class="obs-ts-metric-picker">
+                <summary>选择指标 <span id="obs-ts-picker-count"></span></summary>
+                <div class="obs-ts-picker" id="obs-ts-picker"></div>
+            </details>
             <button class="obs-btn" id="obs-export-ts-btn">Export</button>
         </div>
         <div class="obs-ts-live-bar" id="obs-ts-live-bar" style="display:none;">
