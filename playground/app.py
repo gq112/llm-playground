@@ -262,23 +262,37 @@ class MetricStore:
             if not isinstance(entry, dict):
                 snapshot[key] = entry
                 continue
-            if entry.get("type") == "histogram":
+            if entry.get("type") in ("histogram", "derived"):
                 continue
             snapshot[key] = entry.get("value", entry.get("p50"))
         derived = self._derive_rates(snapshot)
-        snapshot.update(derived)
+        snapshot.update({
+            key: value for key, value in derived.items()
+            if not key.endswith("::interval")
+        })
         self.history.append(snapshot)
         if values is None:
-            for entry in self.metrics.values():
-                if isinstance(entry, dict) and entry.get("type") == "histogram":
+            for key, entry in list(self.metrics.items()):
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("type") == "histogram":
                     for statistic in ("p50", "p90", "p95", "p99", "avg"):
                         entry.pop(statistic, None)
+                elif entry.get("type") == "histogram_bucket":
+                    entry["interval_value"] = None
+                elif entry.get("type") == "derived":
+                    self.metrics.pop(key, None)
         if derived and values is None:
             histogram_statistics: Dict[str, Dict[str, float]] = {}
             for key, value in derived.items():
                 if "::" not in key:
                     continue
                 base, statistic = key.rsplit("::", 1)
+                if statistic == "interval":
+                    entry = self.metrics.get(base)
+                    if entry and entry.get("type") == "histogram_bucket":
+                        entry["interval_value"] = value
+                    continue
                 entry = self.metrics.get(base)
                 if entry and entry.get("type") == "histogram":
                     histogram_statistics.setdefault(base, {})[statistic] = value
@@ -315,6 +329,7 @@ class MetricStore:
         # their deltas between adjacent scrapes so values describe this sample
         # interval rather than the server lifetime.
         buckets_by_histogram: Dict[str, list] = {}
+        invalid_histograms = set()
         marker = "_bucket_le_"
         for key in snapshot:
             if marker not in key:
@@ -324,18 +339,29 @@ class MetricStore:
                 continue
             count = delta(key)
             if count is None:
+                invalid_histograms.add(base)
                 continue
             try:
                 limit = float("inf") if raw_limit == "+Inf" else float(raw_limit)
             except ValueError:
                 continue
-            buckets_by_histogram.setdefault(base, []).append((limit, count))
+            buckets_by_histogram.setdefault(base, []).append((key, limit, count))
 
         for base, buckets in buckets_by_histogram.items():
-            for percentile, value in self._percentiles(buckets).items():
+            if base in invalid_histograms:
+                continue
+            bucket_values = [(limit, count) for _, limit, count in buckets]
+            bucket_values.sort(key=lambda item: item[0])
+            if not bucket_values or bucket_values[-1][0] != float("inf"):
+                continue
+            total_requests = delta(f"{base}_count")
+            if total_requests is not None and abs(total_requests - bucket_values[-1][1]) > 1e-9:
+                continue
+            for bucket_key, _, count in buckets:
+                output[f"{bucket_key}::interval"] = count
+            for percentile, value in self._percentiles(bucket_values).items():
                 output[f"{base}::{percentile}"] = value
             total_duration = delta(f"{base}_sum")
-            total_requests = delta(f"{base}_count")
             if total_duration is not None and total_requests is not None and total_requests > 0:
                 output[f"{base}::avg"] = total_duration / total_requests
         for prefix in ("vllm:", "sglang:"):
@@ -345,8 +371,8 @@ class MetricStore:
                 output["observability:prompt_token_rate"] = prompt / elapsed
             if generated is not None:
                 output["observability:generation_token_rate"] = generated / elapsed
-            if prompt is not None or generated is not None:
-                output["observability:total_token_rate"] = ((prompt or 0) + (generated or 0)) / elapsed
+            if prompt is not None and generated is not None:
+                output["observability:total_token_rate"] = (prompt + generated) / elapsed
 
         accepted = delta("vllm:spec_decode_num_accepted_tokens")
         drafts = delta("vllm:spec_decode_num_draft_tokens")

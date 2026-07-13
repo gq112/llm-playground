@@ -1316,22 +1316,23 @@ const ObservabilityModule = {
                 }
             }
 
-            const p90 = entry.p90 ?? 0;
-            const p99 = entry.p99 ?? 0;
-            const scale = globalMaxSec * 1.05;
-            const p90Pct = (p90 / scale) * 100;
-            const p99Pct = (p99 / scale) * 100;
-            const fillPct = Math.min(p99Pct + 2, 100);
-
-            tableHtml += `<td class="obs-pct-bar-cell">
-                <div class="obs-pct-bar">
-                    <div class="obs-pct-bar-fill" style="width:${fillPct.toFixed(1)}%"></div>
-                    <div class="obs-pct-pin obs-pct-pin-p90" style="left:${p90Pct.toFixed(1)}%"
-                         title="p90: ${this._formatMs(p90 * 1000)}"></div>
-                    <div class="obs-pct-pin obs-pct-pin-p99" style="left:${p99Pct.toFixed(1)}%"
-                         title="p99: ${this._formatMs(p99 * 1000)}"></div>
-                </div>
-            </td>`;
+            if (!Number.isFinite(entry.p90) || !Number.isFinite(entry.p99)) {
+                tableHtml += '<td>--</td>';
+            } else {
+                const scale = globalMaxSec * 1.05;
+                const p90Pct = (entry.p90 / scale) * 100;
+                const p99Pct = (entry.p99 / scale) * 100;
+                const fillPct = Math.min(p99Pct + 2, 100);
+                tableHtml += `<td class="obs-pct-bar-cell">
+                    <div class="obs-pct-bar">
+                        <div class="obs-pct-bar-fill" style="width:${fillPct.toFixed(1)}%"></div>
+                        <div class="obs-pct-pin obs-pct-pin-p90" style="left:${p90Pct.toFixed(1)}%"
+                             title="p90: ${this._formatMs(entry.p90 * 1000)}"></div>
+                        <div class="obs-pct-pin obs-pct-pin-p99" style="left:${p99Pct.toFixed(1)}%"
+                             title="p99: ${this._formatMs(entry.p99 * 1000)}"></div>
+                    </div>
+                </td>`;
+            }
             tableHtml += `</tr>`;
         }
         tableHtml += `</tbody></table>`;
@@ -1342,10 +1343,11 @@ const ObservabilityModule = {
             const bucketKey = key + '_bucket';
             const rawBuckets = Object.entries(metrics)
                 .filter(([k]) => k.startsWith(bucketKey))
+                .filter(([, e]) => Number.isFinite(e.interval_value))
                 .map(([, e]) => ({
                     le: e.labels ? this._extractLeRaw(e.labels) : Infinity,
                     leLabel: e.labels ? this._extractLe(e.labels) : 'Inf',
-                    count: e.value || 0,
+                    count: e.interval_value,
                 }))
                 .sort((a, b) => a.le - b.le);
 
@@ -1364,7 +1366,8 @@ const ObservabilityModule = {
                 prevLabel = b.leLabel;
             }
 
-            const total = prevCount || 1;
+            const total = prevCount;
+            if (total <= 0) continue;
             const maxDiff = Math.max(...diffBuckets.map(d => d.count), 1);
             const peakCount = maxDiff;
 
