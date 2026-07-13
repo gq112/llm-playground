@@ -446,6 +446,31 @@
     font-size: .67rem;
 }
 
+.obs-live-chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    min-height: 20px;
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: .7rem;
+}
+
+.obs-live-chart-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.obs-live-chart-legend i {
+    display: inline-block;
+    width: 15px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--legend-color, var(--chart-accent));
+}
+
 .obs-live-chart-empty {
     grid-column: 1 / -1;
     padding: 28px;

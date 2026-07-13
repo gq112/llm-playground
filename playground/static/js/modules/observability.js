@@ -734,6 +734,94 @@ const ObservabilityModule = {
             container.innerHTML = '<div class="obs-live-chart-empty">正在积累实时趋势数据…</div>';
             return;
         }
+        const percentileLabel = (descriptor) => descriptor.label.match(/(Avg|P90|P99)$/)?.[1] || descriptor.label;
+        const latencyGroups = new Map();
+        const singleMetricCharts = [];
+        chartMetrics.forEach((descriptor) => {
+            if (descriptor.format !== 'duration_ms' || !descriptor.percentile) {
+                singleMetricCharts.push({ title: descriptor.label, descriptors: [descriptor], latency: false });
+                return;
+            }
+            if (!latencyGroups.has(descriptor.key)) {
+                latencyGroups.set(descriptor.key, {
+                    title: descriptor.label.replace(/\s+(Avg|P90|P99)$/, ''),
+                    descriptors: [],
+                    latency: true,
+                });
+            }
+            latencyGroups.get(descriptor.key).descriptors.push(descriptor);
+        });
+        const percentileOrder = { Avg: 0, P90: 1, P99: 2 };
+        const groupedCharts = [
+            ...latencyGroups.values().map((group) => ({
+                ...group,
+                descriptors: group.descriptors.sort((a, b) =>
+                    percentileOrder[percentileLabel(a)] - percentileOrder[percentileLabel(b)]),
+            })),
+            ...singleMetricCharts,
+        ];
+        const latencyColors = { Avg: '#60a5fa', P90: '#68c66f', P99: '#f97316' };
+
+        container.innerHTML = groupedCharts.map((chart, index) => {
+            const primaryDescriptor = chart.descriptors[0];
+            const accent = chart.latency ? latencyColors[percentileLabel(primaryDescriptor)] : colors[index % colors.length];
+            const current = this._liveValue(primaryDescriptor, this._latestMetrics?.[primaryDescriptor.key]);
+            const { average, peak } = this._liveWindowStats(primaryDescriptor);
+            const footer = chart.latency
+                ? `<div class="obs-live-chart-legend">${chart.descriptors.map((descriptor) => {
+                    const label = percentileLabel(descriptor);
+                    return `<span><i style="--legend-color:${latencyColors[label]}"></i>${label}</span>`;
+                }).join('')}</div>`
+                : `<div class="obs-live-chart-meta"><span>60s avg ${formatMetricValue(average, primaryDescriptor.format, primaryDescriptor.unit)}</span><span>peak ${formatMetricValue(peak, primaryDescriptor.format, primaryDescriptor.unit)}</span></div>`;
+            return `<article class="obs-live-chart" style="--chart-accent:${accent}">
+                <div class="obs-live-chart-head">
+                    <div>
+                        <span class="obs-live-chart-title">${this._escapeHtml(chart.title)}</span>
+                        <span class="obs-live-chart-window">last 5 min</span>
+                    </div>
+                    ${chart.latency ? '' : `<strong>${formatMetricValue(current, primaryDescriptor.format, primaryDescriptor.unit)}</strong>`}
+                </div>
+                <div class="obs-live-chart-canvas" id="obs-live-chart-${index}"></div>
+                ${footer}
+            </article>`;
+        }).join('');
+
+        groupedCharts.forEach((chart, index) => {
+            const host = document.getElementById(`obs-live-chart-${index}`);
+            if (!host) return;
+            const timestamps = this._liveHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
+            const values = chart.descriptors.map((descriptor) =>
+                this._liveHistory.map((point) => point[descriptor.historyKey] ?? null));
+            const entry = this._latestMetrics?.[chart.descriptors[0].key];
+            try {
+                this._liveCharts.push(createLineChart({
+                    width: Math.max(120, host.parentElement.clientWidth - 18),
+                    height: 220,
+                    series: [{ label: 'Time' }, ...chart.descriptors.map((descriptor, seriesIndex) => {
+                        const label = percentileLabel(descriptor);
+                        return {
+                            label: chart.latency ? label : descriptor.label,
+                            stroke: chart.latency ? latencyColors[label] : colors[(index + seriesIndex) % colors.length],
+                            width: 1,
+                        };
+                    })],
+                    axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
+                    scales: { x: { time: true } },
+                    tooltip: {
+                        title: chart.title,
+                        modelName: this._currentModelName || this._modelNameFromLabels(entry?.labels),
+                        formatter: (value, seriesIndex) => {
+                            const descriptor = chart.descriptors[seriesIndex] || chart.descriptors[0];
+                            return formatMetricValue(value, descriptor.format, descriptor.unit);
+                        },
+                    },
+                }, [timestamps, ...values], host));
+            } catch (error) {
+                host.textContent = `Chart unavailable: ${error.message}`;
+            }
+        });
+        return;
+
         container.innerHTML = chartMetrics.map((descriptor, index) => {
             const current = this._liveValue(descriptor, this._latestMetrics?.[descriptor.key]);
             const { average, peak } = this._liveWindowStats(descriptor);
