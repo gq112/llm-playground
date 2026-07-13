@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 TARGET_PATH = Path.home() / ".vllm-observability" / "target.json"
 
-app = FastAPI(title="vLLM + SGLang Observability", version="1.0.0")
+app = FastAPI(title="推理指标观测仪表盘", version="1.0.0")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/assets", StaticFiles(directory=str(BASE_DIR / "assets")), name="assets")
 
