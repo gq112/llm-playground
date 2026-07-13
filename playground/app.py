@@ -322,9 +322,9 @@ class MetricStore:
 
 def _configured_poll_interval() -> float:
     try:
-        return float(os.getenv("METRICS_POLL_INTERVAL", "2"))
+        return float(os.getenv("METRICS_POLL_INTERVAL", "1"))
     except ValueError:
-        logger.warning("Invalid METRICS_POLL_INTERVAL; using 2 seconds")
+        logger.warning("Invalid METRICS_POLL_INTERVAL; using 1 second")
         return 2.0
 
 

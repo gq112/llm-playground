@@ -14,7 +14,7 @@
 import { toLegacyDict } from './metrics-registry.js';
 
 class MetricsPoller {
-    constructor(interval = 3000) {
+    constructor(interval = 1000) {
         this._interval = interval;
         this._timer = null;
         this._subscribers = new Set();

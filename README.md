@@ -11,7 +11,7 @@ python run.py
 
 Open http://localhost:7860 and enter the vLLM or SGLang server root URL, for
 example `http://localhost:8000`. The dashboard polls `{url}/metrics` every
-two seconds by default.
+one second by default.
 
 For SGLang, start the server with `--enable-metrics`; the dashboard detects
 the `sglang:` metric family automatically and exposes its KV usage, Radix cache
@@ -25,7 +25,7 @@ Prometheus metrics expose configured speculative steps and draft tokens; those
 are shown as configuration signals rather than inventing an acceptance-rate
 statistic that the endpoint did not export.
 
-The default sampling interval is two seconds. Set `METRICS_POLL_INTERVAL` to
+The default sampling interval is one second. Set `METRICS_POLL_INTERVAL` to
 any value from 1 to 60 seconds when a different collection cadence is needed.
 
 For unattended deployment, set `VLLM_METRICS_URL` and optionally
