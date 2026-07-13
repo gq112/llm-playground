@@ -1,6 +1,6 @@
-# vLLM Observability
+# vLLM + SGLang Observability
 
-A small, self-hosted dashboard for a vLLM server's Prometheus metrics.
+A small, self-hosted dashboard for vLLM and SGLang Prometheus metrics.
 
 ## Run
 

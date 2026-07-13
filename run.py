@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the vLLM observability dashboard on http://localhost:7860."""
+"""Run the vLLM and SGLang observability dashboard on http://localhost:7860."""
 
 from playground.app import main
 

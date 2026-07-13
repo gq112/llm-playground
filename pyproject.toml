@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "vllm-playground"
 dynamic = ["version"]
-description = "A focused observability dashboard for vLLM Prometheus metrics"
+description = "A focused observability dashboard for vLLM and SGLang Prometheus metrics"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"

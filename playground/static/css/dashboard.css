@@ -67,7 +67,18 @@ button, input { font: inherit; }
     letter-spacing: -0.01em;
 }
 
-.dashboard-brand img { width: 30px; height: 30px; }
+.dashboard-mark {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+    color: #fff;
+    font-size: .68rem;
+    font-weight: 800;
+    letter-spacing: .02em;
+}
 .dashboard-brand strong { color: var(--primary-color); }
 
 .target-form { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 720px; }
