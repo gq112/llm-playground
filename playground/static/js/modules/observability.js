@@ -436,7 +436,7 @@ const ObservabilityModule = {
         this._liveDescriptors = descriptors;
         const interval = all?.scrape_interval_seconds;
         const frequency = document.getElementById('obs-live-frequency');
-        if (frequency) frequency.textContent = interval ? `${interval}s sampling` : 'Live sampling';
+        if (frequency) frequency.textContent = interval ? `${interval} 秒采样` : '实时采样';
         this._renderLiveStats(metrics);
         this._refreshLiveHistory();
     },
@@ -460,26 +460,48 @@ const ObservabilityModule = {
     _renderLiveStats(metrics) {
         const container = document.getElementById('obs-live-stats');
         if (!container || !this._liveDescriptors) return;
-        const now = Date.now();
         let html = '';
-        for (const descriptor of this._liveDescriptors) {
+        for (const descriptor of this._rankLiveDescriptors(this._liveDescriptors, 4)) {
             const current = this._liveValue(descriptor, metrics[descriptor.key]);
-            const samples = this._liveHistory
-                .filter((point) => now - new Date(point.timestamp).getTime() <= 60_000)
-                .map((point) => point[descriptor.historyKey])
-                .filter((value) => Number.isFinite(value));
-            const fiveMinute = this._liveHistory
-                .map((point) => point[descriptor.historyKey])
-                .filter((value) => Number.isFinite(value));
-            const average = samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : null;
-            const peak = fiveMinute.length ? Math.max(...fiveMinute) : null;
+            const { average, peak } = this._liveWindowStats(descriptor);
             html += `<div class="obs-live-stat">
                 <span class="obs-live-stat-label">${this._escapeHtml(descriptor.label)}</span>
                 <span class="obs-live-stat-current">${formatMetricValue(current, descriptor.format, descriptor.unit)}</span>
-                <span class="obs-live-stat-meta"><span>60s avg ${formatMetricValue(average, descriptor.format, descriptor.unit)}</span><span>5m high ${formatMetricValue(peak, descriptor.format, descriptor.unit)}</span></span>
+                <span class="obs-live-stat-meta"><span>60 秒均值 ${formatMetricValue(average, descriptor.format, descriptor.unit)}</span><span>5 分钟峰值 ${formatMetricValue(peak, descriptor.format, descriptor.unit)}</span></span>
             </div>`;
         }
         container.innerHTML = html;
+    },
+
+    _rankLiveDescriptors(descriptors, limit) {
+        const priority = [
+            'KV Usage', 'KV Cache Usage', 'Queued Requests', 'Waiting Requests',
+            'Generation Throughput', 'Input Token Rate', 'Output Token Rate',
+            'Total Token Rate', 'Running Requests', 'Radix Cache Hit Rate',
+            'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT p95', 'E2E Latency p95',
+        ];
+        return [...descriptors]
+            .sort((a, b) => {
+                const aRank = priority.indexOf(a.label);
+                const bRank = priority.indexOf(b.label);
+                return (aRank < 0 ? priority.length : aRank) - (bRank < 0 ? priority.length : bRank);
+            })
+            .slice(0, limit);
+    },
+
+    _liveWindowStats(descriptor) {
+        const now = Date.now();
+        const fiveMinute = this._liveHistory
+            .map((point) => point[descriptor.historyKey])
+            .filter((value) => Number.isFinite(value));
+        const samples = this._liveHistory
+            .filter((point) => now - new Date(point.timestamp).getTime() <= 60_000)
+            .map((point) => point[descriptor.historyKey])
+            .filter((value) => Number.isFinite(value));
+        return {
+            average: samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : null,
+            peak: fiveMinute.length ? Math.max(...fiveMinute) : null,
+        };
     },
 
     _buildLiveCharts() {
@@ -488,15 +510,33 @@ const ObservabilityModule = {
         this._liveCharts.forEach((chart) => chart.destroy());
         this._liveCharts = [];
 
-        const chartMetrics = this._liveDescriptors.filter((descriptor) => (
-            /(?:KV (?:Usage|Cache Usage)|Queued Requests|Waiting Requests|Generation Throughput|Total Token Rate|Draft Acceptance Rate)/.test(descriptor.label)
-        )).slice(0, 5);
+        const chartMetrics = this._rankLiveDescriptors(this._liveDescriptors, 8)
+            .filter((descriptor) => this._liveHistory.some((point) => Number.isFinite(point[descriptor.historyKey])));
         container.innerHTML = chartMetrics.map((descriptor, index) =>
             `<div class="obs-live-chart"><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)} · last 5 min</span><div id="obs-live-chart-${index}"></div></div>`
         ).join('');
+        const colors = ['#60a5fa', '#34d399', '#f59e0b', '#a78bfa', '#f472b6', '#22d3ee', '#fb7185', '#84cc16'];
+        if (!chartMetrics.length) {
+            container.innerHTML = '<div class="obs-live-chart-empty">正在积累实时趋势数据…</div>';
+            return;
+        }
+        container.innerHTML = chartMetrics.map((descriptor, index) => {
+            const current = this._liveValue(descriptor, this._latestMetrics?.[descriptor.key]);
+            const { average, peak } = this._liveWindowStats(descriptor);
+            return `<article class="obs-live-chart" style="--chart-accent:${colors[index % colors.length]}">
+                <div class="obs-live-chart-head">
+                    <div>
+                        <span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)}</span>
+                        <span class="obs-live-chart-window">最近 5 分钟</span>
+                    </div>
+                    <strong>${formatMetricValue(current, descriptor.format, descriptor.unit)}</strong>
+                </div>
+                <div class="obs-live-chart-canvas" id="obs-live-chart-${index}"></div>
+                <div class="obs-live-chart-meta"><span>60 秒均值 ${formatMetricValue(average, descriptor.format, descriptor.unit)}</span><span>峰值 ${formatMetricValue(peak, descriptor.format, descriptor.unit)}</span></div>
+            </article>`;
+        }).join('');
         if (this._liveHistory.length === 0) return;
 
-        const colors = ['#60a5fa', '#f59e0b', '#34d399'];
         chartMetrics.forEach((descriptor, index) => {
             const host = document.getElementById(`obs-live-chart-${index}`);
             if (!host) return;
@@ -505,7 +545,7 @@ const ObservabilityModule = {
             try {
                 this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
-                    height: 120,
+                    height: 132,
                     series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 2 }],
                     axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
                     scales: { x: { time: true } },

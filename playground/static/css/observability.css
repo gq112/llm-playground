@@ -233,10 +233,13 @@
 /* --- Live inference cockpit --- */
 .obs-live-inference {
     margin: 0 0 20px;
-    padding: 16px;
-    border: 1px solid var(--border-color);
-    border-radius: 10px;
-    background: var(--card-bg, var(--bg-tertiary));
+    padding: 18px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 28%, var(--border-color));
+    border-radius: 14px;
+    background:
+        radial-gradient(circle at top right, color-mix(in srgb, var(--primary-color) 15%, transparent), transparent 38%),
+        var(--card-bg, var(--bg-tertiary));
+    box-shadow: 0 14px 35px rgba(15, 23, 42, 0.12);
 }
 
 .obs-live-heading {
@@ -249,7 +252,8 @@
 
 .obs-live-heading h3 {
     margin: 0;
-    font-size: .95rem;
+    font-size: 1rem;
+    letter-spacing: .01em;
 }
 
 .obs-live-heading p {
@@ -262,6 +266,10 @@
     color: var(--success-color, #22c55e);
     font: 600 .72rem var(--font-mono, monospace);
     white-space: nowrap;
+    padding: 5px 8px;
+    border: 1px solid color-mix(in srgb, var(--success-color, #22c55e) 32%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--success-color, #22c55e) 10%, transparent);
 }
 
 .obs-live-stats {
@@ -272,10 +280,20 @@
 }
 
 .obs-live-stat {
-    padding: 11px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 7px;
-    background: var(--bg-primary);
+    position: relative;
+    overflow: hidden;
+    padding: 12px 13px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, var(--border-color));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-primary) 74%, var(--card-bg));
+}
+
+.obs-live-stat::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--primary-color);
 }
 
 .obs-live-stat-label {
@@ -308,25 +326,77 @@
 
 .obs-live-charts {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
 }
 
 .obs-live-chart {
+    position: relative;
     min-width: 0;
-    min-height: 155px;
-    padding: 8px;
-    border: 1px solid var(--border-color);
-    border-radius: 7px;
-    background: var(--bg-primary);
+    min-height: 212px;
+    padding: 13px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--chart-accent, var(--primary-color)) 38%, var(--border-color));
+    border-radius: 12px;
+    background:
+        linear-gradient(145deg, color-mix(in srgb, var(--chart-accent, var(--primary-color)) 11%, transparent), transparent 52%),
+        var(--bg-primary);
+    transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+.obs-live-chart:hover {
+    transform: translateY(-2px);
+    border-color: var(--chart-accent, var(--primary-color));
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--chart-accent, var(--primary-color)) 14%, transparent);
+}
+
+.obs-live-chart-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.obs-live-chart-head strong {
+    color: var(--chart-accent, var(--primary-color));
+    font: 700 1.04rem var(--font-mono, ui-monospace, monospace);
+    white-space: nowrap;
 }
 
 .obs-live-chart-title {
     display: block;
-    margin: 0 0 4px 4px;
     color: var(--text-secondary);
     font-size: .72rem;
     font-weight: 600;
+}
+
+.obs-live-chart-window {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-tertiary, var(--text-secondary));
+    font-size: .67rem;
+}
+
+.obs-live-chart-canvas {
+    min-height: 132px;
+}
+
+.obs-live-chart-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--text-tertiary, var(--text-secondary));
+    font-size: .67rem;
+}
+
+.obs-live-chart-empty {
+    grid-column: 1 / -1;
+    padding: 28px;
+    border: 1px dashed var(--border-color);
+    border-radius: 10px;
+    color: var(--text-secondary);
+    text-align: center;
 }
 
 @media (max-width: 860px) {
