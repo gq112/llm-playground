@@ -237,6 +237,13 @@ export const METRIC_REGISTRY = {
         obsTab: 'latency',
         histogramDisplay: ['avg', 'p90', 'p99'],
     },
+    'sglang:per_stage_req_latency_seconds': {
+        category: 'latency',
+        label: 'Stage Request Latency',
+        format: 'duration_ms',
+        obsTab: 'latency',
+        histogramDisplay: ['avg', 'p90', 'p99'],
+    },
 
     // --- Derived token flow (counter delta / collection interval) ---
     'observability:prompt_token_rate': {

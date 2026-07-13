@@ -155,7 +155,7 @@ class MetricStore:
     def parse_prometheus(text: str) -> Dict[str, Dict[str, Any]]:
         types: Dict[str, str] = {}
         metrics: Dict[str, Dict[str, Any]] = {}
-        buckets: Dict[str, list] = {}
+        buckets: Dict[str, Dict[float, float]] = {}
         for line in text.splitlines():
             line = line.strip()
             if not line:
@@ -177,20 +177,26 @@ class MetricStore:
             if name.endswith("_bucket"):
                 le = MetricStore._bucket_limit(labels)
                 if le is not None:
-                    buckets.setdefault(base, []).append((le, value))
+                    histogram_buckets = buckets.setdefault(base, {})
+                    histogram_buckets[le] = histogram_buckets.get(le, 0.0) + value
                 continue
             if name.endswith("_sum") or name.endswith("_count"):
-                metrics[f"{base}{'_sum' if name.endswith('_sum') else '_count'}"] = {
+                key = f"{base}{'_sum' if name.endswith('_sum') else '_count'}"
+                if types.get(base) == "histogram":
+                    value += metrics.get(key, {}).get("value", 0.0)
+                    labels = ""
+                metrics[key] = {
                     "value": value, "type": "counter", "labels": labels
                 }
                 continue
             key = base if name.endswith("_total") else name
             metrics[key] = {"value": value, "type": types.get(base, "gauge"), "labels": labels}
         for base, values in buckets.items():
-            percentiles = MetricStore._percentiles(values)
+            bucket_values = list(values.items())
+            percentiles = MetricStore._percentiles(bucket_values)
             if percentiles:
                 metrics[base] = {"type": "histogram", "labels": "", **percentiles}
-                for limit, count in values:
+                for limit, count in bucket_values:
                     label = "+Inf" if limit == float("inf") else str(limit)
                     metrics[f"{base}_bucket_le_{label}"] = {
                         "value": count, "type": "histogram_bucket", "labels": f'le="{label}"'

@@ -124,9 +124,8 @@ class LocalLineChart {
 
         values.forEach((row, index) => {
             ctx.strokeStyle = series[index + 1]?.stroke || '#648cff';
-            ctx.lineWidth = series[index + 1]?.width || 1.25;
+            ctx.lineWidth = series[index + 1]?.width || 1;
             ctx.beginPath();
-            const points = [];
             let drawing = false;
             row.forEach((value, pointIndex) => {
                 if (!Number.isFinite(value)) {
@@ -135,20 +134,11 @@ class LocalLineChart {
                 }
                 const xPos = x(timestamps[pointIndex]);
                 const yPos = y(value);
-                points.push([xPos, yPos]);
                 if (drawing) ctx.lineTo(xPos, yPos);
                 else ctx.moveTo(xPos, yPos);
                 drawing = true;
             });
             ctx.stroke();
-            if (points.length) {
-                ctx.fillStyle = series[index + 1]?.stroke || '#648cff';
-                points.forEach(([xPos, yPos]) => {
-                    ctx.beginPath();
-                    ctx.arc(xPos, yPos, 1.75, 0, Math.PI * 2);
-                    ctx.fill();
-                });
-            }
         });
     }
 
@@ -539,6 +529,9 @@ const ObservabilityModule = {
             ['e2e_request_latency_seconds', 'E2E Latency Avg', 'duration_ms', null, 'avg'],
             ['e2e_request_latency_seconds', 'E2E Latency P90', 'duration_ms', null, 'p90'],
             ['e2e_request_latency_seconds', 'E2E Latency P99', 'duration_ms', null, 'p99'],
+            ['per_stage_req_latency_seconds', 'Stage Latency Avg', 'duration_ms', null, 'avg'],
+            ['per_stage_req_latency_seconds', 'Stage Latency P90', 'duration_ms', null, 'p90'],
+            ['per_stage_req_latency_seconds', 'Stage Latency P99', 'duration_ms', null, 'p99'],
         ] : [
             ['kv_cache_usage_perc', 'Cache Usage', 'percent'],
             ['num_requests_waiting', 'Waiting Requests', 'integer'],
@@ -634,6 +627,7 @@ const ObservabilityModule = {
             'Total Token Rate', 'Running Requests', 'Radix Cache Hit Rate',
             'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT Avg', 'TTFT P90', 'TTFT P99',
             'TPOT Avg', 'TPOT P90', 'TPOT P99', 'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
+            'Stage Latency Avg', 'Stage Latency P90', 'Stage Latency P99',
         ];
         return [...descriptors]
             .sort((a, b) => {
@@ -649,6 +643,7 @@ const ObservabilityModule = {
             'TTFT Avg', 'TTFT P90', 'TTFT P99',
             'TPOT Avg', 'TPOT P90', 'TPOT P99',
             'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
+            'Stage Latency Avg', 'Stage Latency P90', 'Stage Latency P99',
             'Output Token Rate', 'Input Token Rate',
             'Running Requests', 'Waiting Requests', 'Queued Requests',
             'Mean Accepted Length', 'Accepted Length', 'Token Usage', 'Cache Usage',
@@ -766,7 +761,7 @@ const ObservabilityModule = {
                 this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
                     height: 220,
-                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 1.25 }],
+                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 1 }],
                     axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
                     scales: { x: { time: true } },
                     tooltip: {
@@ -1211,7 +1206,7 @@ const ObservabilityModule = {
             series.push({
                 label: reg.label || key.replace('vllm:', ''),
                 stroke: colors[i % colors.length],
-                width: 1.25,
+                width: 1,
             });
             data.push(this._tsHistory.map((s) => {
                 const v = s[key];
