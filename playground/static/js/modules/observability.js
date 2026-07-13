@@ -806,10 +806,6 @@ const ObservabilityModule = {
         if (!picker) return;
 
         const backend = this._latestBackend === 'sglang' ? 'sglang' : 'vllm';
-        const latestKeys = Object.keys(this._latestMetrics || {});
-        const selectionHasData = [...this._tsSelectedMetrics].some((key) => latestKeys.includes(key));
-        if (picker.dataset.backend === backend && picker.children.length > 0 && (!latestKeys.length || selectionHasData)) return;
-
         const preferredMetrics = backend === 'sglang'
             ? ['sglang:token_usage', 'sglang:num_queue_reqs', 'sglang:gen_throughput']
             : ['vllm:kv_cache_usage_perc', 'vllm:num_requests_running', 'vllm:avg_generation_throughput_toks_per_s'];
@@ -821,27 +817,44 @@ const ObservabilityModule = {
             ]
             : Object.keys(METRIC_REGISTRY).filter((key) => key.startsWith('observability:'));
 
-        const allKeys = Object.keys(METRIC_REGISTRY).filter((k) => {
+        const registeredKeys = Object.keys(METRIC_REGISTRY).filter((k) => {
             const r = METRIC_REGISTRY[k];
             return (k.startsWith(`${backend}:`) || derivedMetrics.includes(k)) && r.format !== 'duration_ms';
         });
+        const discoveredKeys = Object.entries(this._latestMetrics || {})
+            .filter(([key, entry]) => {
+                const isCurrentBackend = key.startsWith(`${backend}:`) || derivedMetrics.includes(key);
+                const isNumeric = Number.isFinite(entry?.value) || Number.isFinite(entry?.p50);
+                return isCurrentBackend && isNumeric && METRIC_REGISTRY[key]?.format !== 'duration_ms';
+            })
+            .map(([key]) => key);
+        const allKeys = [...new Set([...registeredKeys, ...discoveredKeys])];
         const availableKeys = allKeys.filter((key) => Object.hasOwn(this._latestMetrics || {}, key));
         const pickerKeys = availableKeys.length ? availableKeys : allKeys;
+        const pickerSignature = pickerKeys.join('|');
+        if (picker.dataset.backend === backend && picker.dataset.metricSignature === pickerSignature && picker.children.length > 0) return;
+
         const defaultMetrics = preferredMetrics.filter((key) => pickerKeys.includes(key));
         for (const key of pickerKeys) {
             if (defaultMetrics.length >= 3) break;
             if (!defaultMetrics.includes(key)) defaultMetrics.push(key);
         }
-        this._tsSelectedMetrics = new Set(defaultMetrics);
+        const retainedMetrics = picker.dataset.backend === backend
+            ? [...this._tsSelectedMetrics].filter((key) => pickerKeys.includes(key))
+            : [];
+        this._tsSelectedMetrics = new Set(retainedMetrics.length ? retainedMetrics : defaultMetrics);
 
         let html = '';
         for (const key of pickerKeys) {
-            const reg = METRIC_REGISTRY[key];
-            const checked = defaultMetrics.includes(key) ? 'checked' : '';
+            const reg = METRIC_REGISTRY[key] || {
+                label: key.replace(/^(vllm:|sglang:|observability:)/, '').replace(/_/g, ' '),
+            };
+            const checked = this._tsSelectedMetrics.has(key) ? 'checked' : '';
             html += `<label><input type="checkbox" value="${key}" ${checked} /> ${this._escapeHtml(reg.label)}</label>`;
         }
         picker.innerHTML = html;
         picker.dataset.backend = backend;
+        picker.dataset.metricSignature = pickerSignature;
 
         picker.addEventListener('change', (e) => {
             if (e.target.type !== 'checkbox') return;
