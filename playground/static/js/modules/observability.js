@@ -584,18 +584,9 @@ const ObservabilityModule = {
 
     _renderLiveStats(metrics) {
         const container = document.getElementById('obs-live-stats');
-        if (!container || !this._liveDescriptors) return;
-        let html = '';
-        for (const descriptor of this._overviewStatDescriptors(this._liveDescriptors)) {
-            const current = this._liveValue(descriptor, metrics[descriptor.key]);
-            const { average, peak } = this._liveWindowStats(descriptor);
-            html += `<div class="obs-live-stat">
-                <span class="obs-live-stat-label">${this._escapeHtml(descriptor.label)}</span>
-                <span class="obs-live-stat-current">${formatMetricValue(current, descriptor.format, descriptor.unit)}</span>
-                <span class="obs-live-stat-meta"><span>60 秒均值 ${formatMetricValue(average, descriptor.format, descriptor.unit)}</span><span>5 分钟峰值 ${formatMetricValue(peak, descriptor.format, descriptor.unit)}</span></span>
-            </div>`;
-        }
-        container.innerHTML = html;
+        if (!container) return;
+        container.replaceChildren();
+        container.style.display = 'none';
     },
 
     _rankLiveDescriptors(descriptors, limit) {
@@ -696,9 +687,7 @@ const ObservabilityModule = {
         this._liveCharts.forEach((chart) => chart.destroy());
         this._liveCharts = [];
 
-        const overviewLabels = new Set(this._overviewStatDescriptors(this._liveDescriptors).map((descriptor) => descriptor.label));
-        const chartCandidates = this._liveDescriptors.filter((descriptor) => !overviewLabels.has(descriptor.label));
-        const chartMetrics = this._rankLiveDescriptors(chartCandidates, chartCandidates.length)
+        const chartMetrics = this._overviewStatDescriptors(this._liveDescriptors)
             .filter((descriptor) => this._liveHistory.some((point) => Number.isFinite(point[descriptor.historyKey])));
         container.innerHTML = chartMetrics.map((descriptor, index) =>
             `<div class="obs-live-chart"><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)} · last 5 min</span><div id="obs-live-chart-${index}"></div></div>`
@@ -755,44 +744,10 @@ const ObservabilityModule = {
     _renderOverview(metrics) {
         const container = document.getElementById('obs-overview-cards');
         if (!container) return;
-
-        const groups = groupByCategory(metrics);
-        let html = '';
-
-        for (const [catId, cat] of Object.entries(CATEGORIES)) {
-            const items = groups[catId];
-            if (!items || items.length === 0) continue;
-
-            html += `<div class="obs-category-group">`;
-            html += `<h3 class="obs-category-title">${this._escapeHtml(cat.title)}</h3>`;
-            html += `<div class="obs-cards">`;
-
-            for (const { key, entry, registry } of items) {
-                const reg = registry || {};
-                const value = entry.value ?? entry.p50 ?? null;
-                const format = reg.format || this._guessFormat(key, entry);
-                const formatted = formatMetricValue(value, format, reg.unit);
-                const thresholds = this._getThresholds(key);
-                const status = getThresholdStatus(value, thresholds);
-                const label = reg.label || key.replace('vllm:', '').replace(/_/g, ' ');
-                const typeStr = entry.type || 'unknown';
-
-                html += `<div class="obs-card">`;
-                html += `  <span class="obs-card-label">${this._escapeHtml(label)}</span>`;
-                html += `  <span class="obs-card-value status-${status}">${formatted}</span>`;
-                html += `  <span class="obs-card-type">${typeStr}</span>`;
-                html += `</div>`;
-            }
-
-            html += `</div></div>`;
-        }
-
         const noData = document.getElementById('obs-overview-no-data');
         if (noData) noData.style.display = 'none';
-
         const existingGroups = container.querySelectorAll('.obs-category-group');
         existingGroups.forEach((g) => g.remove());
-        container.insertAdjacentHTML('beforeend', html);
     },
 
     // -- Alerts -------------------------------------------------------------
