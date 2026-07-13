@@ -228,8 +228,37 @@ class LocalLineChart {
     }
 }
 
+function chartRenderData(data, pointsPerMinute = 5) {
+    const [timestamps = [], ...series] = data;
+    if (timestamps.length <= pointsPerMinute) return data;
+
+    const selected = [];
+    let lastSlot = null;
+    timestamps.forEach((timestamp, index) => {
+        const minute = Math.floor(timestamp / 60);
+        const slot = minute * pointsPerMinute + Math.min(
+            pointsPerMinute - 1,
+            Math.floor(((timestamp - minute * 60) / 60) * pointsPerMinute),
+        );
+        const hasValue = series.some((values) => Number.isFinite(values[index]));
+        if (slot !== lastSlot) {
+            selected.push({ index, hasValue });
+            lastSlot = slot;
+        } else if (hasValue || !selected[selected.length - 1].hasValue) {
+            selected[selected.length - 1] = { index, hasValue };
+        }
+    });
+
+    const indexes = selected.map(({ index }) => index);
+    return [
+        indexes.map((index) => timestamps[index]),
+        ...series.map((values) => indexes.map((index) => values[index])),
+    ];
+}
+
 function createLineChart(options, data, target) {
-    return window.uPlot ? new window.uPlot(options, data, target) : new LocalLineChart(options, data, target);
+    const renderData = chartRenderData(data);
+    return window.uPlot ? new window.uPlot(options, renderData, target) : new LocalLineChart(options, renderData, target);
 }
 
 const ObservabilityModule = {
