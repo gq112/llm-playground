@@ -102,6 +102,7 @@ class LocalLineChart {
             ctx.strokeStyle = series[index + 1]?.stroke || '#648cff';
             ctx.lineWidth = series[index + 1]?.width || 2;
             ctx.beginPath();
+            const points = [];
             let drawing = false;
             row.forEach((value, pointIndex) => {
                 if (!Number.isFinite(value)) {
@@ -110,11 +111,29 @@ class LocalLineChart {
                 }
                 const xPos = x(timestamps[pointIndex]);
                 const yPos = y(value);
+                points.push([xPos, yPos]);
                 if (drawing) ctx.lineTo(xPos, yPos);
                 else ctx.moveTo(xPos, yPos);
                 drawing = true;
             });
             ctx.stroke();
+            if (points.length > 1) {
+                ctx.save();
+                ctx.globalAlpha = 0.14;
+                ctx.fillStyle = series[index + 1]?.stroke || '#648cff';
+                ctx.beginPath();
+                ctx.moveTo(points[0][0], points[0][1]);
+                points.slice(1).forEach(([xPos, yPos]) => ctx.lineTo(xPos, yPos));
+                ctx.lineTo(points[points.length - 1][0], height - padding.bottom);
+                ctx.lineTo(points[0][0], height - padding.bottom);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+                ctx.beginPath();
+                ctx.moveTo(points[0][0], points[0][1]);
+                points.slice(1).forEach(([xPos, yPos]) => ctx.lineTo(xPos, yPos));
+                ctx.stroke();
+            }
         });
     }
 
@@ -146,6 +165,24 @@ class LocalLineChart {
         const title = this.options.tooltip?.title || '指标详情';
         const modelName = this.options.tooltip?.modelName;
         this.tooltip.innerHTML = `<b>${escape(title)}</b><time>${escape(timestamp)}</time>${modelName ? `<em>模型：${escape(modelName)}</em>` : ''}${rows}`;
+        const rawModelName = this.options.tooltip?.modelName || '未标注模型';
+        const modelParts = rawModelName.split('/').filter(Boolean);
+        const shortModelName = modelParts.slice(-2).join('/') || rawModelName;
+        const visibleSeries = this.data.slice(1)
+            .map((series, seriesIndex) => ({
+                value: series[index],
+                label: this.options.series[seriesIndex + 1]?.label || `指标 ${seriesIndex + 1}`,
+                seriesIndex,
+            }))
+            .filter(({ value }) => Number.isFinite(value));
+        const compactValues = visibleSeries.map(({ value, label, seriesIndex }) => {
+            const formatter = this.options.tooltip?.formatter;
+            const display = formatter ? formatter(value, seriesIndex) : value.toPrecision(5);
+            return visibleSeries.length > 1
+                ? `<div><span>${escape(label)}</span><strong>${escape(display)}</strong></div>`
+                : `<strong class="local-line-chart-tooltip-value">${escape(display)}</strong>`;
+        }).join('');
+        this.tooltip.innerHTML = `<span class="local-line-chart-tooltip-model" title="${escape(rawModelName)}">${escape(shortModelName)}</span>${compactValues}`;
         this.tooltip.style.display = 'block';
         this.tooltip.style.left = `${Math.min(Math.max(localX + 12, 6), width - 190)}px`;
         this.tooltip.style.top = `${Math.max(event.clientY - rect.top + 10, 6)}px`;
@@ -629,7 +666,7 @@ const ObservabilityModule = {
             try {
                 this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
-                    height: 132,
+                    height: 220,
                     series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 2 }],
                     axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
                     scales: { x: { time: true } },
@@ -1118,7 +1155,7 @@ const ObservabilityModule = {
         }
 
         const width = wrap.clientWidth - 16;
-        const height = Math.max(280, wrap.clientHeight - 16);
+        const height = Math.max(400, wrap.clientHeight - 16);
 
         const opts = {
             width,
