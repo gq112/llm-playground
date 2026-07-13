@@ -75,7 +75,8 @@ class LocalLineChart {
         const plotWidth = Math.max(1, width - padding.left - padding.right);
         const plotHeight = Math.max(1, height - padding.top - padding.bottom);
         const xMin = timestamps[0];
-        const xMax = timestamps[timestamps.length - 1] || xMin + 1;
+        const lastTimestamp = timestamps[timestamps.length - 1];
+        const xMax = lastTimestamp > xMin ? lastTimestamp : xMin + 60;
         const rawMin = Math.min(...numbers);
         const rawMax = Math.max(...numbers);
         const spread = rawMax - rawMin || Math.max(Math.abs(rawMax) * 0.1, 1);
@@ -99,9 +100,22 @@ class LocalLineChart {
             ctx.fillText(label, 3, yPos + 4);
         }
 
-        ctx.fillText(new Date(xMin * 1000).toLocaleTimeString(), padding.left, height - 7);
-        const endLabel = new Date(xMax * 1000).toLocaleTimeString();
-        ctx.fillText(endLabel, Math.max(padding.left, width - padding.right - ctx.measureText(endLabel).width), height - 7);
+        const minuteTicks = [];
+        for (let tick = Math.ceil(xMin / 60) * 60; tick <= xMax; tick += 60) {
+            minuteTicks.push(tick);
+        }
+        if (minuteTicks.length === 0) minuteTicks.push(xMin, xMax);
+        ctx.textAlign = 'center';
+        minuteTicks.forEach((tick) => {
+            const xPos = x(tick);
+            ctx.beginPath();
+            ctx.moveTo(xPos, padding.top);
+            ctx.lineTo(xPos, height - padding.bottom);
+            ctx.stroke();
+            const label = new Date(tick * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            ctx.fillText(label, xPos, height - 7);
+        });
+        ctx.textAlign = 'start';
 
         values.forEach((row, index) => {
             ctx.strokeStyle = series[index + 1]?.stroke || '#648cff';
@@ -122,22 +136,13 @@ class LocalLineChart {
                 drawing = true;
             });
             ctx.stroke();
-            if (points.length > 1) {
-                ctx.save();
-                ctx.globalAlpha = 0.14;
+            if (points.length) {
                 ctx.fillStyle = series[index + 1]?.stroke || '#648cff';
-                ctx.beginPath();
-                ctx.moveTo(points[0][0], points[0][1]);
-                points.slice(1).forEach(([xPos, yPos]) => ctx.lineTo(xPos, yPos));
-                ctx.lineTo(points[points.length - 1][0], height - padding.bottom);
-                ctx.lineTo(points[0][0], height - padding.bottom);
-                ctx.closePath();
-                ctx.fill();
-                ctx.restore();
-                ctx.beginPath();
-                ctx.moveTo(points[0][0], points[0][1]);
-                points.slice(1).forEach(([xPos, yPos]) => ctx.lineTo(xPos, yPos));
-                ctx.stroke();
+                points.forEach(([xPos, yPos]) => {
+                    ctx.beginPath();
+                    ctx.arc(xPos, yPos, 2.5, 0, Math.PI * 2);
+                    ctx.fill();
+                });
             }
         });
     }
