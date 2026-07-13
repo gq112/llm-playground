@@ -5,7 +5,7 @@
             <span class="icon-observability-large"></span>
             <div>
                 <h2>Observability Dashboard</h2>
-                <p class="obs-header-subtitle">Real-time vLLM server metrics with auto-discovery <span class="obs-active-instance" id="obs-active-instance"></span></p>
+                <p class="obs-header-subtitle">Real-time metrics collected from a vLLM or SGLang endpoint <span class="obs-backend-badge" id="obs-backend-badge"></span></p>
             </div>
         </div>
         <div class="obs-header-actions">
@@ -28,6 +28,17 @@
 
     <!-- Overview Tab -->
     <div class="obs-tab-content active" id="obs-tab-overview">
+        <section class="obs-live-inference" id="obs-live-inference">
+            <div class="obs-live-heading">
+                <div>
+                    <h3>Live inference</h3>
+                    <p>Current value, 60-second average, and five-minute peak</p>
+                </div>
+                <span id="obs-live-frequency" class="obs-live-frequency">Updating…</span>
+            </div>
+            <div id="obs-live-stats" class="obs-live-stats"></div>
+            <div id="obs-live-charts" class="obs-live-charts"></div>
+        </section>
         <div class="obs-alerts" id="obs-alerts"></div>
         <div class="obs-alert-history" id="obs-alert-history" style="display:none;">
             <h4 class="obs-category-title">Alert History</h4>
@@ -36,12 +47,12 @@
         <div id="obs-overview-cards">
             <div class="obs-no-data" id="obs-overview-no-data">
                 <h3>No metrics available</h3>
-                <p>Start a vLLM server to see live metrics, or click <strong>Demo</strong> to preview with simulated data.</p>
+                <p>Connect a vLLM or SGLang server to see live metrics, or click <strong>Demo</strong> to preview with simulated data.</p>
             </div>
             <div class="obs-no-data" id="obs-remote-no-data" style="display:none;">
                 <h3>Metrics unavailable in remote mode</h3>
-                <p>The Prometheus <code>/metrics</code> endpoint on the remote vLLM server is not reachable from this machine.</p>
-                <p>Ensure the endpoint is accessible, or use subprocess/container mode for full observability.</p>
+                <p>The Prometheus <code>/metrics</code> endpoint is not reachable from this machine.</p>
+                <p>Check that the endpoint is reachable and that metrics are enabled on the selected runtime.</p>
             </div>
         </div>
     </div>

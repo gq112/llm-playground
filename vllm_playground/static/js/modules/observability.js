@@ -1,9 +1,7 @@
 /**
  * Observability Module -- full-page metrics dashboard.
  *
- * Follows the same dynamic template loading pattern as vLLM-Omni:
- *   index.html has a small placeholder div; the full HTML is fetched
- *   from /static/templates/observability.html on first visit.
+ * The dashboard loads the metrics view into a small page placeholder.
  */
 
 import {
@@ -16,7 +14,6 @@ import {
 import { metricsPoller } from './metrics-poller.js';
 
 const ObservabilityModule = {
-    ui: null,
     templateLoaded: false,
     _unsubscribe: null,
     _currentTab: 'overview',
@@ -32,8 +29,11 @@ const ObservabilityModule = {
     _customThresholds: null,
     _lastScrapeLocalRef: null,
     _prevScrapeAge: null,
+    _liveHistory: [],
+    _liveCharts: [],
+    _liveFetchInProgress: false,
 
-    // -- Template loading (same pattern as OmniModule) ---------------------
+    // -- Template loading ---------------------------------------------------
 
     async loadTemplate() {
         const container = document.getElementById('observability-view');
@@ -82,23 +82,6 @@ const ObservabilityModule = {
             metricsPoller.start();
         }
 
-        this._updateActiveInstanceLabel();
-    },
-
-    _updateActiveInstanceLabel() {
-        const el = document.getElementById('obs-active-instance');
-        if (!el) return;
-        const ui = this.ui;
-        const inst = ui._instances?.find(i => i.id === ui._activeInstanceId);
-        if (inst) {
-            const model = inst.model || inst.name || 'Unknown';
-            const port = inst.port || '?';
-            el.textContent = `${model} :${port}`;
-            el.style.display = '';
-        } else {
-            el.textContent = '';
-            el.style.display = 'none';
-        }
     },
 
     onViewDeactivated() {
@@ -228,6 +211,7 @@ const ObservabilityModule = {
     _onMetrics({ all }) {
         const source = (all && all.source) || 'none';
         this._updateDemoButtons(source);
+        this._updateBackendBadge(all?.backend);
 
         if (!all || !all.metrics) {
             this._showNoData(true, all);
@@ -240,6 +224,7 @@ const ObservabilityModule = {
         }
         this._showNoData(false, all);
         this._latestMetrics = metrics;
+        this._latestBackend = all.backend;
 
         const ageEl = document.getElementById('obs-scrape-age');
         if (ageEl && all.scrape_age_seconds != null) {
@@ -253,6 +238,7 @@ const ObservabilityModule = {
         }
 
         this._renderOverview(metrics);
+        this._renderLiveInference(metrics, all);
         this._renderAllMetricsTable();
         this._renderAlerts(metrics);
 
@@ -264,10 +250,21 @@ const ObservabilityModule = {
         }
     },
 
+    _updateBackendBadge(backend) {
+        const badge = document.getElementById('obs-backend-badge');
+        if (!badge) return;
+        const names = { vllm: 'vLLM', sglang: 'SGLang', demo: 'Demo' };
+        const name = names[backend];
+        badge.textContent = name || '';
+        badge.classList.toggle('visible', Boolean(name));
+    },
+
     _showNoData(show, allData) {
         const nd = document.getElementById('obs-overview-no-data');
         const remoteNd = document.getElementById('obs-remote-no-data');
         const isRemoteNoMetrics = allData?.run_mode === 'remote' && allData?.source === 'none';
+        const livePanel = document.getElementById('obs-live-inference');
+        if (livePanel && show) livePanel.style.display = 'none';
 
         if (show && isRemoteNoMetrics) {
             if (nd) nd.style.display = 'none';
@@ -279,6 +276,144 @@ const ObservabilityModule = {
             if (nd) nd.style.display = 'none';
             if (remoteNd) remoteNd.style.display = 'none';
         }
+    },
+
+    // -- Live inference cockpit -------------------------------------------
+
+    _liveMetricDescriptors(backend, metrics) {
+        const isSglang = backend === 'sglang';
+        const prefix = isSglang ? 'sglang:' : 'vllm:';
+        const specs = isSglang ? [
+            ['token_usage', 'KV Usage', 'percent'],
+            ['num_queue_reqs', 'Queued Requests', 'integer'],
+            ['gen_throughput', 'Generation Throughput', 'number', 'tok/s'],
+            ['observability:prompt_token_rate', 'Input Token Rate', 'number', 'tok/s'],
+            ['observability:generation_token_rate', 'Output Token Rate', 'number', 'tok/s'],
+            ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
+            ['num_running_reqs', 'Running Requests', 'integer'],
+            ['cache_hit_rate', 'Cache Hit Rate', 'percent'],
+            ['spec_num_steps', 'Speculative Steps', 'integer'],
+            ['spec_num_draft_tokens', 'Draft Tokens / Step', 'integer'],
+            ['time_to_first_token_seconds', 'TTFT p95', 'duration_ms', null, 'p95'],
+            ['time_per_output_token_seconds', 'TPOT p95', 'duration_ms', null, 'p95'],
+            ['e2e_request_latency_seconds', 'E2E Latency p95', 'duration_ms', null, 'p95'],
+        ] : [
+            ['kv_cache_usage_perc', 'KV Cache Usage', 'percent'],
+            ['num_requests_waiting', 'Waiting Requests', 'integer'],
+            ['avg_generation_throughput_toks_per_s', 'Generation Throughput', 'number', 'tok/s'],
+            ['observability:prompt_token_rate', 'Input Token Rate', 'number', 'tok/s'],
+            ['observability:generation_token_rate', 'Output Token Rate', 'number', 'tok/s'],
+            ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
+            ['num_requests_running', 'Running Requests', 'integer'],
+            ['prefix_cache_hit_rate', 'Prefix Cache Hit Rate', 'percent'],
+            ['observability:spec_acceptance_rate', 'Draft Acceptance Rate', 'percent'],
+            ['observability:spec_mean_accept_length', 'Mean Accepted Length', 'number', 'tok/draft'],
+            ['observability:spec_draft_token_rate', 'Draft Token Rate', 'number', 'tok/s'],
+            ['observability:spec_accepted_token_rate', 'Accepted Token Rate', 'number', 'tok/s'],
+            ['time_to_first_token_seconds', 'TTFT p95', 'duration_ms', null, 'p95'],
+            ['request_time_per_output_token_seconds', 'TPOT p95', 'duration_ms', null, 'p95'],
+            ['e2e_request_latency_seconds', 'E2E Latency p95', 'duration_ms', null, 'p95'],
+        ];
+
+        return specs.map(([name, label, format, unit, percentile]) => {
+            const key = name.includes(':') ? name : `${prefix}${name}`;
+            return { key, label, format, unit, percentile, historyKey: percentile ? `${key}::${percentile}` : key };
+        }).filter(({ key }) => metrics[key]);
+    },
+
+    _liveValue(descriptor, entry) {
+        if (!entry) return null;
+        return descriptor.percentile ? entry[descriptor.percentile] : (entry.value ?? entry.p50 ?? null);
+    },
+
+    _renderLiveInference(metrics, all) {
+        const panel = document.getElementById('obs-live-inference');
+        if (!panel) return;
+        const descriptors = this._liveMetricDescriptors(all?.backend, metrics);
+        panel.style.display = descriptors.length ? '' : 'none';
+        if (!descriptors.length) return;
+
+        this._liveDescriptors = descriptors;
+        const interval = all?.scrape_interval_seconds;
+        const frequency = document.getElementById('obs-live-frequency');
+        if (frequency) frequency.textContent = interval ? `${interval}s sampling` : 'Live sampling';
+        this._renderLiveStats(metrics);
+        this._refreshLiveHistory();
+    },
+
+    async _refreshLiveHistory() {
+        if (this._liveFetchInProgress) return;
+        this._liveFetchInProgress = true;
+        try {
+            this._liveHistory = await metricsPoller.getHistory(null, 300);
+            if (this._latestMetrics && this._liveDescriptors?.length) {
+                this._renderLiveStats(this._latestMetrics);
+                this._buildLiveCharts();
+            }
+        } catch {
+            // The current statistics remain useful if the history query fails.
+        } finally {
+            this._liveFetchInProgress = false;
+        }
+    },
+
+    _renderLiveStats(metrics) {
+        const container = document.getElementById('obs-live-stats');
+        if (!container || !this._liveDescriptors) return;
+        const now = Date.now();
+        let html = '';
+        for (const descriptor of this._liveDescriptors) {
+            const current = this._liveValue(descriptor, metrics[descriptor.key]);
+            const samples = this._liveHistory
+                .filter((point) => now - new Date(point.timestamp).getTime() <= 60_000)
+                .map((point) => point[descriptor.historyKey])
+                .filter((value) => Number.isFinite(value));
+            const fiveMinute = this._liveHistory
+                .map((point) => point[descriptor.historyKey])
+                .filter((value) => Number.isFinite(value));
+            const average = samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : null;
+            const peak = fiveMinute.length ? Math.max(...fiveMinute) : null;
+            html += `<div class="obs-live-stat">
+                <span class="obs-live-stat-label">${this._escapeHtml(descriptor.label)}</span>
+                <span class="obs-live-stat-current">${formatMetricValue(current, descriptor.format, descriptor.unit)}</span>
+                <span class="obs-live-stat-meta"><span>60s avg ${formatMetricValue(average, descriptor.format, descriptor.unit)}</span><span>5m high ${formatMetricValue(peak, descriptor.format, descriptor.unit)}</span></span>
+            </div>`;
+        }
+        container.innerHTML = html;
+    },
+
+    _buildLiveCharts() {
+        const container = document.getElementById('obs-live-charts');
+        if (!container || !this._liveDescriptors) return;
+        this._liveCharts.forEach((chart) => chart.destroy());
+        this._liveCharts = [];
+
+        const chartMetrics = this._liveDescriptors.filter((descriptor) => (
+            /(?:KV (?:Usage|Cache Usage)|Queued Requests|Waiting Requests|Generation Throughput|Total Token Rate|Draft Acceptance Rate)/.test(descriptor.label)
+        )).slice(0, 5);
+        container.innerHTML = chartMetrics.map((descriptor, index) =>
+            `<div class="obs-live-chart"><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)} · last 5 min</span><div id="obs-live-chart-${index}"></div></div>`
+        ).join('');
+        if (!window.uPlot || this._liveHistory.length === 0) return;
+
+        const colors = ['#60a5fa', '#f59e0b', '#34d399'];
+        chartMetrics.forEach((descriptor, index) => {
+            const host = document.getElementById(`obs-live-chart-${index}`);
+            if (!host) return;
+            const timestamps = this._liveHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
+            const values = this._liveHistory.map((point) => point[descriptor.historyKey] ?? null);
+            try {
+                this._liveCharts.push(new uPlot({
+                    width: Math.max(120, host.parentElement.clientWidth - 18),
+                    height: 120,
+                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 2 }],
+                    axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
+                    scales: { x: { time: true } },
+                }, [timestamps, values], host));
+            } catch (error) {
+                host.textContent = `Chart unavailable: ${error.message}`;
+            }
+        });
     },
 
     // -- Overview tab -------------------------------------------------------
@@ -568,18 +703,19 @@ const ObservabilityModule = {
 
     _initTsPicker() {
         const picker = document.getElementById('obs-ts-picker');
-        if (!picker || picker.children.length > 0) return;
+        if (!picker) return;
 
-        const defaultMetrics = [
-            'vllm:kv_cache_usage_perc',
-            'vllm:num_requests_running',
-            'vllm:avg_generation_throughput_toks_per_s',
-        ];
+        const backend = this._latestBackend === 'sglang' ? 'sglang' : 'vllm';
+        if (picker.dataset.backend === backend && picker.children.length > 0) return;
+
+        const defaultMetrics = backend === 'sglang'
+            ? ['sglang:token_usage', 'sglang:num_queue_reqs', 'sglang:gen_throughput']
+            : ['vllm:kv_cache_usage_perc', 'vllm:num_requests_running', 'vllm:avg_generation_throughput_toks_per_s'];
         this._tsSelectedMetrics = new Set(defaultMetrics);
 
         const allKeys = Object.keys(METRIC_REGISTRY).filter((k) => {
             const r = METRIC_REGISTRY[k];
-            return r.format !== 'duration_ms';
+            return (k.startsWith(`${backend}:`) || k.startsWith('observability:')) && r.format !== 'duration_ms';
         });
 
         let html = '';
@@ -589,6 +725,7 @@ const ObservabilityModule = {
             html += `<label><input type="checkbox" value="${key}" ${checked} /> ${this._escapeHtml(reg.label)}</label>`;
         }
         picker.innerHTML = html;
+        picker.dataset.backend = backend;
 
         picker.addEventListener('change', (e) => {
             if (e.target.type !== 'checkbox') return;
@@ -1073,14 +1210,5 @@ const ObservabilityModule = {
             .replace(/"/g, '&quot;');
     },
 };
-
-window.ObservabilityModule = ObservabilityModule;
-
-export function initObservabilityModule(ui) {
-    ObservabilityModule.ui = ui;
-    ui.loadObservabilityTemplate = ObservabilityModule.loadTemplate.bind(ObservabilityModule);
-    ui.onObservabilityViewActivated = ObservabilityModule.onViewActivated.bind(ObservabilityModule);
-    ui.onObservabilityViewDeactivated = ObservabilityModule.onViewDeactivated.bind(ObservabilityModule);
-}
 
 export default ObservabilityModule;

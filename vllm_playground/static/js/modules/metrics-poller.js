@@ -110,4 +110,4 @@ class MetricsPoller {
     }
 }
 
-export const metricsPoller = new MetricsPoller(3000);
+export const metricsPoller = new MetricsPoller(2000);

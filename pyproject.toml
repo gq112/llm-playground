@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "vllm-playground"
 dynamic = ["version"]
-description = "A web interface for managing and interacting with vLLM servers"
+description = "A focused observability dashboard for vLLM Prometheus metrics"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
@@ -18,8 +18,9 @@ keywords = [
     "ai",
     "machine-learning",
     "inference",
-    "web-interface",
-    "playground"
+    "observability",
+    "monitoring",
+    "prometheus"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -40,43 +41,17 @@ classifiers = [
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
-    "websockets>=12.0",
     "aiohttp>=3.9.0",
-    "pydantic>=2.4.0",
-    "python-multipart>=0.0.6",
-    "numpy>=1.24.0",
-    "jinja2>=3.1.0",
-    "psutil>=5.9.0",
-    "requests>=2.31.0",
-]
-
-[project.optional-dependencies]
-benchmark = [
-    "guidellm>=0.3.1",
-]
-mcp = [
-    "mcp>=1.0.0",
-]
-# claudecode extra removed - ttyd is a system package, not a pip package
-# Install ttyd with: brew install ttyd (macOS) or apt install ttyd (Ubuntu)
-dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pre-commit>=3.0.0",
-    "ruff>=0.14.0",
-]
-all = [
-    "vllm-playground[benchmark,mcp,dev]",
 ]
 
 [project.scripts]
 vllm-playground = "vllm_playground.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/micytao/vllm-playground"
-Documentation = "https://github.com/micytao/vllm-playground#readme"
-Repository = "https://github.com/micytao/vllm-playground"
-Issues = "https://github.com/micytao/vllm-playground/issues"
+Homepage = "https://github.com/gq112/llm-playground"
+Documentation = "https://github.com/gq112/llm-playground#readme"
+Repository = "https://github.com/gq112/llm-playground"
+Issues = "https://github.com/gq112/llm-playground/issues"
 
 [tool.hatch.build.targets.sdist]
 include = [

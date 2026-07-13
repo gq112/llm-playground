@@ -1,5 +1,5 @@
 /**
- * Metric Registry -- single source of truth for all vLLM metric metadata.
+ * Metric Registry -- display metadata for vLLM and SGLang Prometheus metrics.
  *
  * Adding a new curated metric = one entry here.  Unregistered metrics
  * auto-appear in the All Metrics table with sensible defaults.
@@ -146,12 +146,168 @@ export const METRIC_REGISTRY = {
         obsTab: 'latency',
         histogramDisplay: ['p50', 'p95', 'p99'],
     },
+
+    // --- SGLang: KV cache & queue ---
+    'sglang:token_usage': {
+        category: 'kv-cache',
+        label: 'KV Token Usage',
+        format: 'percent',
+        thresholds: { warning: 0.70, danger: 0.90 },
+        obsTab: 'overview',
+    },
+    'sglang:cache_hit_rate': {
+        category: 'kv-cache',
+        label: 'Radix Cache Hit Rate',
+        format: 'percent',
+        obsTab: 'overview',
+    },
+    'sglang:num_used_tokens': {
+        category: 'kv-cache',
+        label: 'Used KV Tokens',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+    'sglang:num_running_reqs': {
+        category: 'requests',
+        label: 'Running Requests',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+    'sglang:num_queue_reqs': {
+        category: 'requests',
+        label: 'Queued Requests',
+        format: 'integer',
+        thresholds: { warning: 10, danger: 50 },
+        obsTab: 'overview',
+    },
+
+    // --- SGLang: throughput & speculative decoding ---
+    'sglang:gen_throughput': {
+        category: 'throughput',
+        label: 'Generation Throughput',
+        unit: 'tok/s',
+        format: 'number',
+        obsTab: 'overview',
+    },
+    'sglang:prompt_tokens': {
+        category: 'tokens',
+        label: 'Input Tokens (Total)',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+    'sglang:generation_tokens': {
+        category: 'tokens',
+        label: 'Output Tokens (Total)',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+    'sglang:spec_num_steps': {
+        category: 'spec-decode',
+        label: 'Speculative Steps',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+    'sglang:spec_num_draft_tokens': {
+        category: 'spec-decode',
+        label: 'Speculative Draft Tokens',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+
+    // --- SGLang: latency histograms ---
+    'sglang:time_to_first_token_seconds': {
+        category: 'latency',
+        label: 'Time to First Token',
+        format: 'duration_ms',
+        thresholds: { warning: 0.5, danger: 2 },
+        obsTab: 'latency',
+        histogramDisplay: ['p50', 'p95', 'p99'],
+    },
+    'sglang:e2e_request_latency_seconds': {
+        category: 'latency',
+        label: 'E2E Request Latency',
+        format: 'duration_ms',
+        obsTab: 'latency',
+        histogramDisplay: ['p50', 'p95', 'p99'],
+    },
+    'sglang:time_per_output_token_seconds': {
+        category: 'latency',
+        label: 'Time per Output Token',
+        format: 'duration_ms',
+        obsTab: 'latency',
+        histogramDisplay: ['p50', 'p95', 'p99'],
+    },
+
+    // --- Derived token flow (counter delta / collection interval) ---
+    'observability:prompt_token_rate': {
+        category: 'tokens',
+        label: 'Input Token Rate',
+        unit: 'tok/s',
+        format: 'number',
+        obsTab: 'overview',
+    },
+    'vllm:prompt_tokens': {
+        category: 'tokens',
+        label: 'Input Tokens (Total)',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+    'vllm:generation_tokens': {
+        category: 'tokens',
+        label: 'Output Tokens (Total)',
+        format: 'integer',
+        obsTab: 'overview',
+    },
+    'observability:generation_token_rate': {
+        category: 'tokens',
+        label: 'Output Token Rate',
+        unit: 'tok/s',
+        format: 'number',
+        obsTab: 'overview',
+    },
+    'observability:total_token_rate': {
+        category: 'tokens',
+        label: 'Total Token Rate',
+        unit: 'tok/s',
+        format: 'number',
+        obsTab: 'overview',
+    },
+
+    // --- Derived vLLM speculative decoding efficiency ---
+    'observability:spec_draft_token_rate': {
+        category: 'spec-decode',
+        label: 'Draft Token Rate',
+        unit: 'tok/s',
+        format: 'number',
+        obsTab: 'overview',
+    },
+    'observability:spec_accepted_token_rate': {
+        category: 'spec-decode',
+        label: 'Accepted Token Rate',
+        unit: 'tok/s',
+        format: 'number',
+        obsTab: 'overview',
+    },
+    'observability:spec_acceptance_rate': {
+        category: 'spec-decode',
+        label: 'Draft Acceptance Rate',
+        format: 'percent',
+        obsTab: 'overview',
+    },
+    'observability:spec_mean_accept_length': {
+        category: 'spec-decode',
+        label: 'Mean Accepted Length',
+        unit: 'tok/draft',
+        format: 'number',
+        obsTab: 'overview',
+    },
 };
 
 export const CATEGORIES = {
     'kv-cache':    { title: 'KV Cache & Memory',    icon: 'database' },
     'requests':    { title: 'Request Queue',         icon: 'list' },
     'throughput':  { title: 'Throughput',             icon: 'zap' },
+    'tokens':      { title: 'Token Flow',             icon: 'activity' },
     'spec-decode': { title: 'Speculative Decoding',  icon: 'rocket' },
     'latency':     { title: 'Latency',               icon: 'clock' },
     'other':       { title: 'Other Metrics',         icon: 'bar-chart', autoPopulate: true },
