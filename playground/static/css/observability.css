@@ -380,6 +380,39 @@
     min-height: 132px;
 }
 
+.local-line-chart-host {
+    position: relative;
+}
+
+.local-line-chart-tooltip {
+    position: absolute;
+    z-index: 4;
+    display: none;
+    min-width: 160px;
+    max-width: 230px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 35%, var(--border-color));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.28);
+    color: var(--text-primary);
+    font-size: .72rem;
+    line-height: 1.45;
+    pointer-events: none;
+}
+
+.local-line-chart-tooltip b,
+.local-line-chart-tooltip time,
+.local-line-chart-tooltip em {
+    display: block;
+}
+
+.local-line-chart-tooltip b { color: var(--primary-color); }
+.local-line-chart-tooltip time { color: var(--text-secondary); font-size: .66rem; }
+.local-line-chart-tooltip em { color: var(--text-secondary); font-style: normal; }
+.local-line-chart-tooltip div { display: flex; justify-content: space-between; gap: 12px; }
+.local-line-chart-tooltip div strong { color: var(--text-primary); }
+
 .obs-live-chart-meta {
     display: flex;
     justify-content: space-between;
@@ -677,7 +710,7 @@
 .obs-ts-metric-picker {
     position: relative;
     flex: 1 1 280px;
-    min-width: 230px;
+    min-width: 0;
     max-width: 460px;
     border: 1px solid var(--border-color);
     border-radius: 7px;
@@ -708,22 +741,34 @@
 }
 
 .obs-ts-picker {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    left: 0;
+    z-index: 12;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px 12px;
-    max-height: 220px;
+    max-height: 250px;
     padding: 10px;
+    overflow-x: hidden;
     overflow-y: auto;
-    border-top: 1px solid var(--border-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--card-bg, var(--bg-tertiary));
+    box-shadow: 0 14px 30px rgba(15, 23, 42, 0.2);
 }
 
 .obs-ts-picker label {
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: 4px;
     font-size: 0.8rem;
     color: var(--text-secondary);
     cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 

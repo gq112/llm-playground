@@ -17,9 +17,17 @@ class LocalLineChart {
     constructor(options, data, target) {
         this.options = options;
         this.data = data;
+        this.target = target;
         this.canvas = document.createElement('canvas');
         this.canvas.className = 'local-line-chart';
-        target.replaceChildren(this.canvas);
+        this.tooltip = document.createElement('div');
+        this.tooltip.className = 'local-line-chart-tooltip';
+        this._onPointerMove = this._handlePointerMove.bind(this);
+        this._onPointerLeave = this._handlePointerLeave.bind(this);
+        target.classList.add('local-line-chart-host');
+        target.replaceChildren(this.canvas, this.tooltip);
+        this.canvas.addEventListener('mousemove', this._onPointerMove);
+        this.canvas.addEventListener('mouseleave', this._onPointerLeave);
         this._render();
     }
 
@@ -29,7 +37,10 @@ class LocalLineChart {
     }
 
     destroy() {
+        this.canvas.removeEventListener('mousemove', this._onPointerMove);
+        this.canvas.removeEventListener('mouseleave', this._onPointerLeave);
         this.canvas.remove();
+        this.tooltip.remove();
     }
 
     _render() {
@@ -48,6 +59,7 @@ class LocalLineChart {
         const [timestamps = [], ...values] = this.data;
         const numbers = values.flat().filter(Number.isFinite);
         if (!timestamps.length || !numbers.length) {
+            this._geometry = null;
             ctx.fillStyle = '#9eacc4';
             ctx.font = '13px system-ui, sans-serif';
             ctx.fillText('No numeric data to chart', 16, 28);
@@ -66,6 +78,7 @@ class LocalLineChart {
         const yMax = rawMax + spread * 0.08;
         const x = (value) => padding.left + ((value - xMin) / (xMax - xMin || 1)) * plotWidth;
         const y = (value) => padding.top + (1 - (value - yMin) / (yMax - yMin || 1)) * plotHeight;
+        this._geometry = { padding, plotWidth, width, timestamps, x, y };
 
         ctx.font = '11px system-ui, sans-serif';
         ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
@@ -103,6 +116,71 @@ class LocalLineChart {
             });
             ctx.stroke();
         });
+    }
+
+    _handlePointerMove(event) {
+        if (!this._geometry) return;
+        const rect = this.canvas.getBoundingClientRect();
+        const localX = event.clientX - rect.left;
+        const { padding, plotWidth, timestamps, width } = this._geometry;
+        const ratio = Math.min(1, Math.max(0, (localX - padding.left) / plotWidth));
+        const index = Math.round(ratio * (timestamps.length - 1));
+        if (index !== this._hoverIndex) {
+            this._hoverIndex = index;
+            this._render();
+            this._drawHover(index);
+        }
+
+        const timestamp = new Date(timestamps[index] * 1000).toLocaleString();
+        const escape = (value) => String(value).replace(/[&<>'"]/g, (char) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+        })[char]);
+        const rows = this.data.slice(1).map((series, seriesIndex) => {
+            const value = series[index];
+            if (!Number.isFinite(value)) return '';
+            const label = this.options.series[seriesIndex + 1]?.label || `指标 ${seriesIndex + 1}`;
+            const formatter = this.options.tooltip?.formatter;
+            const display = formatter ? formatter(value, seriesIndex) : value.toPrecision(5);
+            return `<div><span>${escape(label)}</span><strong>${escape(display)}</strong></div>`;
+        }).join('');
+        const title = this.options.tooltip?.title || '指标详情';
+        const modelName = this.options.tooltip?.modelName;
+        this.tooltip.innerHTML = `<b>${escape(title)}</b><time>${escape(timestamp)}</time>${modelName ? `<em>模型：${escape(modelName)}</em>` : ''}${rows}`;
+        this.tooltip.style.display = 'block';
+        this.tooltip.style.left = `${Math.min(Math.max(localX + 12, 6), width - 190)}px`;
+        this.tooltip.style.top = `${Math.max(event.clientY - rect.top + 10, 6)}px`;
+    }
+
+    _drawHover(index) {
+        if (!this._geometry) return;
+        const { width, padding, timestamps, x, y } = this._geometry;
+        const ratio = window.devicePixelRatio || 1;
+        const ctx = this.canvas.getContext('2d');
+        const xPos = x(timestamps[index]);
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.75)';
+        ctx.beginPath();
+        ctx.moveTo(xPos, padding.top);
+        ctx.lineTo(xPos, this.options.height - padding.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        this.data.slice(1).forEach((series, seriesIndex) => {
+            const value = series[index];
+            if (!Number.isFinite(value)) return;
+            ctx.fillStyle = this.options.series[seriesIndex + 1]?.stroke || '#648cff';
+            ctx.beginPath();
+            ctx.arc(xPos, y(value), 3.5, 0, Math.PI * 2);
+            ctx.fill();
+        });
+        ctx.restore();
+    }
+
+    _handlePointerLeave() {
+        this._hoverIndex = null;
+        this.tooltip.style.display = 'none';
+        this._render();
     }
 }
 
@@ -504,6 +582,11 @@ const ObservabilityModule = {
         };
     },
 
+    _modelNameFromLabels(labels = '') {
+        const match = labels.match(/(?:^|,)\s*model_name="([^"]+)"/);
+        return match ? match[1] : '';
+    },
+
     _buildLiveCharts() {
         const container = document.getElementById('obs-live-charts');
         if (!container || !this._liveDescriptors) return;
@@ -542,6 +625,7 @@ const ObservabilityModule = {
             if (!host) return;
             const timestamps = this._liveHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
             const values = this._liveHistory.map((point) => point[descriptor.historyKey] ?? null);
+            const entry = this._latestMetrics?.[descriptor.key];
             try {
                 this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
@@ -549,6 +633,11 @@ const ObservabilityModule = {
                     series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 2 }],
                     axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
                     scales: { x: { time: true } },
+                    tooltip: {
+                        title: descriptor.label,
+                        modelName: this._modelNameFromLabels(entry?.labels),
+                        formatter: (value) => formatMetricValue(value, descriptor.format, descriptor.unit),
+                    },
                 }, [timestamps, values], host));
             } catch (error) {
                 host.textContent = `Chart unavailable: ${error.message}`;
@@ -1041,6 +1130,10 @@ const ObservabilityModule = {
             ],
             cursor: { sync: { key: 'obs' } },
             scales: { x: { time: true } },
+            tooltip: {
+                title: '时序指标',
+                modelName: this._modelNameFromLabels(this._latestMetrics?.[selected[0]]?.labels),
+            },
         };
 
         wrap.innerHTML = '';
