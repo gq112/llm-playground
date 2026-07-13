@@ -13,6 +13,11 @@ import {
 } from './metrics-registry.js';
 import { metricsPoller } from './metrics-poller.js';
 
+function displayModelName(modelName = '') {
+    const segments = modelName.trim().replace(/\/+$/, '').split('/').filter(Boolean);
+    return segments[segments.length - 1] || modelName;
+}
+
 class LocalLineChart {
     constructor(options, data, target) {
         this.options = options;
@@ -166,7 +171,7 @@ class LocalLineChart {
         const modelName = this.options.tooltip?.modelName;
         this.tooltip.innerHTML = `<b>${escape(title)}</b><time>${escape(timestamp)}</time>${modelName ? `<em>模型：${escape(modelName)}</em>` : ''}${rows}`;
         const rawModelName = this.options.tooltip?.modelName || '';
-        const shortModelName = rawModelName.replace(/^Qwen\//i, '');
+        const shortModelName = displayModelName(rawModelName);
         const visibleSeries = this.data.slice(1)
             .map((series, seriesIndex) => ({
                 value: series[index],
@@ -581,7 +586,7 @@ const ObservabilityModule = {
         const container = document.getElementById('obs-live-stats');
         if (!container || !this._liveDescriptors) return;
         let html = '';
-        for (const descriptor of this._rankLiveDescriptors(this._liveDescriptors, 4)) {
+        for (const descriptor of this._overviewStatDescriptors(this._liveDescriptors)) {
             const current = this._liveValue(descriptor, metrics[descriptor.key]);
             const { average, peak } = this._liveWindowStats(descriptor);
             html += `<div class="obs-live-stat">
@@ -607,6 +612,17 @@ const ObservabilityModule = {
                 return (aRank < 0 ? priority.length : aRank) - (bRank < 0 ? priority.length : bRank);
             })
             .slice(0, limit);
+    },
+
+    _overviewStatDescriptors(descriptors) {
+        const labels = [
+            'TTFT p95', 'TPOT p95', 'E2E Latency p95',
+            'Output Token Rate', 'Input Token Rate',
+            'Running Requests', 'Waiting Requests', 'Queued Requests',
+        ];
+        return labels
+            .map((label) => descriptors.find((descriptor) => descriptor.label === label))
+            .filter(Boolean);
     },
 
     _liveWindowStats(descriptor) {
@@ -644,7 +660,7 @@ const ObservabilityModule = {
     },
 
     _displayModelName(modelName = '') {
-        return modelName.replace(/^Qwen\//i, '');
+        return displayModelName(modelName);
     },
 
     _updateCurrentModelName(metrics) {
@@ -680,7 +696,9 @@ const ObservabilityModule = {
         this._liveCharts.forEach((chart) => chart.destroy());
         this._liveCharts = [];
 
-        const chartMetrics = this._rankLiveDescriptors(this._liveDescriptors, 8)
+        const overviewLabels = new Set(this._overviewStatDescriptors(this._liveDescriptors).map((descriptor) => descriptor.label));
+        const chartCandidates = this._liveDescriptors.filter((descriptor) => !overviewLabels.has(descriptor.label));
+        const chartMetrics = this._rankLiveDescriptors(chartCandidates, chartCandidates.length)
             .filter((descriptor) => this._liveHistory.some((point) => Number.isFinite(point[descriptor.historyKey])));
         container.innerHTML = chartMetrics.map((descriptor, index) =>
             `<div class="obs-live-chart"><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)} · last 5 min</span><div id="obs-live-chart-${index}"></div></div>`
