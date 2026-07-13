@@ -209,7 +209,6 @@
     font-size: 0.75rem;
     color: var(--text-secondary);
     font-weight: 500;
-    text-transform: uppercase;
     letter-spacing: 0.03em;
 }
 
@@ -304,7 +303,6 @@
     font-weight: 600;
     letter-spacing: .04em;
     text-overflow: ellipsis;
-    text-transform: uppercase;
     white-space: nowrap;
 }
 
