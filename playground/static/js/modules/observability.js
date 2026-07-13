@@ -165,7 +165,7 @@ class LocalLineChart {
         const title = this.options.tooltip?.title || '指标详情';
         const modelName = this.options.tooltip?.modelName;
         this.tooltip.innerHTML = `<b>${escape(title)}</b><time>${escape(timestamp)}</time>${modelName ? `<em>模型：${escape(modelName)}</em>` : ''}${rows}`;
-        const rawModelName = this.options.tooltip?.modelName || '未标注模型';
+        const rawModelName = this.options.tooltip?.modelName || '';
         const modelParts = rawModelName.split('/').filter(Boolean);
         const shortModelName = modelParts.slice(-2).join('/') || rawModelName;
         const visibleSeries = this.data.slice(1)
@@ -182,7 +182,10 @@ class LocalLineChart {
                 ? `<div><span>${escape(label)}</span><strong>${escape(display)}</strong></div>`
                 : `<strong class="local-line-chart-tooltip-value">${escape(display)}</strong>`;
         }).join('');
-        this.tooltip.innerHTML = `<span class="local-line-chart-tooltip-model" title="${escape(rawModelName)}">${escape(shortModelName)}</span>${compactValues}`;
+        const modelMarkup = rawModelName
+            ? `<span class="local-line-chart-tooltip-model" title="${escape(rawModelName)}">${escape(shortModelName)}</span>`
+            : '';
+        this.tooltip.innerHTML = `${modelMarkup}${compactValues}`;
         this.tooltip.style.display = 'block';
         this.tooltip.style.left = `${Math.min(Math.max(localX + 12, 6), width - 190)}px`;
         this.tooltip.style.top = `${Math.max(event.clientY - rect.top + 10, 6)}px`;
@@ -244,6 +247,7 @@ const ObservabilityModule = {
     _liveHistory: [],
     _liveCharts: [],
     _liveFetchInProgress: false,
+    _currentModelName: '',
 
     // -- Template loading ---------------------------------------------------
 
@@ -437,6 +441,7 @@ const ObservabilityModule = {
         this._showNoData(false, all);
         this._latestMetrics = metrics;
         this._latestBackend = all.backend;
+        this._updateCurrentModelName(metrics);
 
         const ageEl = document.getElementById('obs-scrape-age');
         if (ageEl && all.scrape_age_seconds != null) {
@@ -624,6 +629,25 @@ const ObservabilityModule = {
         return match ? match[1] : '';
     },
 
+    _compactModelName(modelName) {
+        const parts = modelName.split('/').filter(Boolean);
+        return parts.slice(-2).join('/') || modelName;
+    },
+
+    _updateCurrentModelName(metrics) {
+        const modelName = Object.values(metrics)
+            .map((entry) => this._modelNameFromLabels(entry?.labels))
+            .find(Boolean);
+        if (modelName) this._currentModelName = modelName;
+
+        const element = document.getElementById('obs-model-name');
+        if (!element) return;
+        const compactName = this._compactModelName(this._currentModelName);
+        element.textContent = compactName ? `模型：${compactName}` : '';
+        element.title = this._currentModelName;
+        element.classList.toggle('visible', Boolean(compactName));
+    },
+
     _buildLiveCharts() {
         const container = document.getElementById('obs-live-charts');
         if (!container || !this._liveDescriptors) return;
@@ -672,7 +696,7 @@ const ObservabilityModule = {
                     scales: { x: { time: true } },
                     tooltip: {
                         title: descriptor.label,
-                        modelName: this._modelNameFromLabels(entry?.labels),
+                        modelName: this._currentModelName || this._modelNameFromLabels(entry?.labels),
                         formatter: (value) => formatMetricValue(value, descriptor.format, descriptor.unit),
                     },
                 }, [timestamps, values], host));
@@ -1169,7 +1193,7 @@ const ObservabilityModule = {
             scales: { x: { time: true } },
             tooltip: {
                 title: '时序指标',
-                modelName: this._modelNameFromLabels(this._latestMetrics?.[selected[0]]?.labels),
+                modelName: this._currentModelName || this._modelNameFromLabels(this._latestMetrics?.[selected[0]]?.labels),
             },
         };
 

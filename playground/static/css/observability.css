@@ -116,6 +116,21 @@
 
 .obs-backend-badge.visible { display: inline-block; }
 
+.obs-model-name {
+    display: none;
+    max-width: 210px;
+    margin-left: 6px;
+    overflow: hidden;
+    color: var(--text-tertiary, var(--text-secondary));
+    font-size: .68rem;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.obs-model-name.visible { display: inline-block; }
+
 .obs-header-actions {
     display: flex;
     gap: 8px;
@@ -409,14 +424,15 @@
 
 .local-line-chart-tooltip-model {
     display: block;
-    max-width: 190px;
+    max-width: 145px;
     overflow: hidden;
     color: var(--primary-color);
+    font-size: .62rem;
     font-weight: 700;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.local-line-chart-tooltip-value { display: block; color: var(--text-primary); font-size: .9rem; }
+.local-line-chart-tooltip-value { display: block; color: var(--text-primary); font-size: .82rem; }
 .local-line-chart-tooltip div { display: flex; justify-content: space-between; gap: 12px; }
 .local-line-chart-tooltip div strong { color: var(--text-primary); }
 
