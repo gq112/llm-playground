@@ -166,8 +166,7 @@ class LocalLineChart {
         const modelName = this.options.tooltip?.modelName;
         this.tooltip.innerHTML = `<b>${escape(title)}</b><time>${escape(timestamp)}</time>${modelName ? `<em>模型：${escape(modelName)}</em>` : ''}${rows}`;
         const rawModelName = this.options.tooltip?.modelName || '';
-        const modelParts = rawModelName.split('/').filter(Boolean);
-        const shortModelName = modelParts.slice(-2).join('/') || rawModelName;
+        const shortModelName = rawModelName.replace(/^Qwen\//i, '');
         const visibleSeries = this.data.slice(1)
             .map((series, seriesIndex) => ({
                 value: series[index],
@@ -248,6 +247,7 @@ const ObservabilityModule = {
     _liveCharts: [],
     _liveFetchInProgress: false,
     _currentModelName: '',
+    _currentDraftModelName: '',
 
     // -- Template loading ---------------------------------------------------
 
@@ -624,28 +624,54 @@ const ObservabilityModule = {
         };
     },
 
-    _modelNameFromLabels(labels = '') {
-        const match = labels.match(/(?:^|,)\s*model_name="([^"]+)"/);
-        return match ? match[1] : '';
+    _labelValueFromLabels(labels = '', keys = []) {
+        for (const key of keys) {
+            const match = labels.match(new RegExp(`(?:^|,)\\s*${key}="([^"]+)"`));
+            if (match) return match[1];
+        }
+        return '';
     },
 
-    _compactModelName(modelName) {
-        const parts = modelName.split('/').filter(Boolean);
-        return parts.slice(-2).join('/') || modelName;
+    _modelNameFromLabels(labels = '') {
+        return this._labelValueFromLabels(labels, ['model_name', 'served_model_name']);
+    },
+
+    _draftModelNameFromLabels(labels = '') {
+        return this._labelValueFromLabels(labels, [
+            'draft_model_name', 'draft_model', 'draft_model_path',
+            'speculative_draft_model', 'speculative_draft_model_name',
+        ]);
+    },
+
+    _displayModelName(modelName = '') {
+        return modelName.replace(/^Qwen\//i, '');
     },
 
     _updateCurrentModelName(metrics) {
-        const modelName = Object.values(metrics)
+        const entries = Object.values(metrics);
+        const modelName = entries
             .map((entry) => this._modelNameFromLabels(entry?.labels))
             .find(Boolean);
+        const draftModelName = entries
+            .map((entry) => this._draftModelNameFromLabels(entry?.labels))
+            .find(Boolean);
         if (modelName) this._currentModelName = modelName;
+        if (draftModelName) this._currentDraftModelName = draftModelName;
 
         const element = document.getElementById('obs-model-name');
-        if (!element) return;
-        const compactName = this._compactModelName(this._currentModelName);
-        element.textContent = compactName ? `模型：${compactName}` : '';
-        element.title = this._currentModelName;
-        element.classList.toggle('visible', Boolean(compactName));
+        const displayName = this._displayModelName(this._currentModelName);
+        if (element) {
+            element.textContent = displayName ? `模型：${displayName}` : '';
+            element.title = this._currentModelName;
+            element.classList.toggle('visible', Boolean(displayName));
+        }
+
+        const draftElement = document.getElementById('obs-draft-model-name');
+        const draftDisplayName = this._displayModelName(this._currentDraftModelName);
+        if (!draftElement) return;
+        draftElement.textContent = draftDisplayName ? `草稿模型：${draftDisplayName}` : '';
+        draftElement.title = this._currentDraftModelName;
+        draftElement.classList.toggle('visible', Boolean(draftDisplayName));
     },
 
     _buildLiveCharts() {

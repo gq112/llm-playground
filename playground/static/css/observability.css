@@ -85,6 +85,10 @@
     margin: 2px 0 0;
     font-size: 0.85rem;
     color: var(--text-secondary);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
 }
 
 .obs-active-instance {
@@ -118,18 +122,18 @@
 
 .obs-model-name {
     display: none;
-    max-width: 210px;
-    margin-left: 6px;
-    overflow: hidden;
     color: var(--text-tertiary, var(--text-secondary));
     font-size: .68rem;
     font-weight: 600;
-    text-overflow: ellipsis;
     vertical-align: middle;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
 }
 
 .obs-model-name.visible { display: inline-block; }
+
+.obs-draft-model-name {
+    color: var(--warning-color, #f59e0b);
+}
 
 .obs-header-actions {
     display: flex;
@@ -424,13 +428,11 @@
 
 .local-line-chart-tooltip-model {
     display: block;
-    max-width: 145px;
-    overflow: hidden;
+    max-width: 260px;
     color: var(--primary-color);
     font-size: .62rem;
     font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
 }
 .local-line-chart-tooltip-value { display: block; color: var(--text-primary); font-size: .82rem; }
 .local-line-chart-tooltip div { display: flex; justify-content: space-between; gap: 12px; }
