@@ -509,7 +509,8 @@ const ObservabilityModule = {
         const isSglang = backend === 'sglang';
         const prefix = isSglang ? 'sglang:' : 'vllm:';
         const specs = isSglang ? [
-            ['token_usage', 'KV Usage', 'percent'],
+            ['token_usage', 'Cache Usage', 'percent'],
+            ['num_used_tokens', 'Token Usage', 'integer', 'tokens'],
             ['num_queue_reqs', 'Queued Requests', 'integer'],
             ['gen_throughput', 'Generation Throughput', 'number', 'tok/s'],
             ['observability:prompt_token_rate', 'Input Token Rate', 'number', 'tok/s'],
@@ -523,7 +524,7 @@ const ObservabilityModule = {
             ['time_per_output_token_seconds', 'TPOT p95', 'duration_ms', null, 'p95'],
             ['e2e_request_latency_seconds', 'E2E Latency p95', 'duration_ms', null, 'p95'],
         ] : [
-            ['kv_cache_usage_perc', 'KV Cache Usage', 'percent'],
+            ['kv_cache_usage_perc', 'Cache Usage', 'percent'],
             ['num_requests_waiting', 'Waiting Requests', 'integer'],
             ['avg_generation_throughput_toks_per_s', 'Generation Throughput', 'number', 'tok/s'],
             ['observability:prompt_token_rate', 'Input Token Rate', 'number', 'tok/s'],
@@ -540,10 +541,25 @@ const ObservabilityModule = {
             ['e2e_request_latency_seconds', 'E2E Latency p95', 'duration_ms', null, 'p95'],
         ];
 
-        return specs.map(([name, label, format, unit, percentile]) => {
+        const descriptors = specs.map(([name, label, format, unit, percentile]) => {
             const key = name.includes(':') ? name : `${prefix}${name}`;
             return { key, label, format, unit, percentile, historyKey: percentile ? `${key}::${percentile}` : key };
         }).filter(({ key }) => metrics[key]);
+        if (isSglang) {
+            const acceptedLengthKey = [
+                'sglang:spec_accept_length', 'sglang:spec_accept_len', 'sglang:accept_length',
+            ].find((key) => metrics[key]);
+            if (acceptedLengthKey) {
+                descriptors.push({
+                    key: acceptedLengthKey,
+                    label: 'Accepted Length',
+                    format: 'number',
+                    unit: 'tok/draft',
+                    historyKey: acceptedLengthKey,
+                });
+            }
+        }
+        return descriptors;
     },
 
     _liveValue(descriptor, entry) {
@@ -610,6 +626,7 @@ const ObservabilityModule = {
             'TTFT p95', 'TPOT p95', 'E2E Latency p95',
             'Output Token Rate', 'Input Token Rate',
             'Running Requests', 'Waiting Requests', 'Queued Requests',
+            'Mean Accepted Length', 'Accepted Length', 'Token Usage', 'Cache Usage',
         ];
         return labels
             .map((label) => descriptors.find((descriptor) => descriptor.label === label))
