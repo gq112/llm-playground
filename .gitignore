@@ -74,7 +74,7 @@ dmypy.json
 # =============================================================================
 # Single Source of Truth - Prevent duplicate source files at root
 # =============================================================================
-# All source code lives in vllm_playground/ (the package directory).
+# All source code lives in playground/ (the package directory).
 # These patterns prevent accidental recreation of root-level duplicates.
 # See CONTRIBUTING.md for details on the project structure.
 

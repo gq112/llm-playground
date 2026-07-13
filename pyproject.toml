@@ -45,7 +45,7 @@ dependencies = [
 ]
 
 [project.scripts]
-vllm-playground = "vllm_playground.cli:main"
+vllm-playground = "playground.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/gq112/llm-playground"
@@ -55,27 +55,27 @@ Issues = "https://github.com/gq112/llm-playground/issues"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/vllm_playground",
+    "/playground",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["vllm_playground"]
+packages = ["playground"]
 
 [tool.hatch.version]
-path = "vllm_playground/__init__.py"
+path = "playground/__init__.py"
 
 [tool.hatch.build]
 include = [
-    "vllm_playground/**/*.py",
-    "vllm_playground/**/*.html",
-    "vllm_playground/**/*.css",
-    "vllm_playground/**/*.js",
-    "vllm_playground/**/*.json",
-    "vllm_playground/**/*.png",
-    "vllm_playground/**/*.jpeg",
-    "vllm_playground/**/*.jpg",
-    "vllm_playground/**/*.gif",
-    "vllm_playground/**/*.svg",
+    "playground/**/*.py",
+    "playground/**/*.html",
+    "playground/**/*.css",
+    "playground/**/*.js",
+    "playground/**/*.json",
+    "playground/**/*.png",
+    "playground/**/*.jpeg",
+    "playground/**/*.jpg",
+    "playground/**/*.gif",
+    "playground/**/*.svg",
 ]
 
 [tool.ruff]

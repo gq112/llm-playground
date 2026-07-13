@@ -436,4 +436,4 @@ async def reset_simulation() -> Dict[str, str]:
 
 
 def main(host: str = "0.0.0.0", port: int = 7860, reload: bool = False) -> None:
-    uvicorn.run("vllm_playground.app:app", host=host, port=port, reload=reload)
+    uvicorn.run("playground.app:app", host=host, port=port, reload=reload)
