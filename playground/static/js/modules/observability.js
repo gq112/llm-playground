@@ -101,10 +101,15 @@ class LocalLineChart {
         }
 
         const minuteTicks = [];
-        for (let tick = Math.ceil(xMin / 60) * 60; tick <= xMax; tick += 60) {
-            minuteTicks.push(tick);
-        }
-        if (minuteTicks.length === 0) minuteTicks.push(xMin, xMax);
+        let previousMinute = null;
+        timestamps.forEach((timestamp) => {
+            const minute = Math.floor(timestamp / 60);
+            if (minute !== previousMinute) {
+                minuteTicks.push(timestamp);
+                previousMinute = minute;
+            }
+        });
+        if (minuteTicks.length === 1 && xMax > xMin) minuteTicks.push(xMax);
         ctx.textAlign = 'center';
         minuteTicks.forEach((tick) => {
             const xPos = x(tick);
@@ -119,7 +124,7 @@ class LocalLineChart {
 
         values.forEach((row, index) => {
             ctx.strokeStyle = series[index + 1]?.stroke || '#648cff';
-            ctx.lineWidth = series[index + 1]?.width || 2;
+            ctx.lineWidth = series[index + 1]?.width || 1.25;
             ctx.beginPath();
             const points = [];
             let drawing = false;
@@ -140,7 +145,7 @@ class LocalLineChart {
                 ctx.fillStyle = series[index + 1]?.stroke || '#648cff';
                 points.forEach(([xPos, yPos]) => {
                     ctx.beginPath();
-                    ctx.arc(xPos, yPos, 2.5, 0, Math.PI * 2);
+                    ctx.arc(xPos, yPos, 1.75, 0, Math.PI * 2);
                     ctx.fill();
                 });
             }
@@ -761,7 +766,7 @@ const ObservabilityModule = {
                 this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
                     height: 220,
-                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 2 }],
+                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 1.25 }],
                     axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
                     scales: { x: { time: true } },
                     tooltip: {
@@ -1206,7 +1211,7 @@ const ObservabilityModule = {
             series.push({
                 label: reg.label || key.replace('vllm:', ''),
                 stroke: colors[i % colors.length],
-                width: 2,
+                width: 1.25,
             });
             data.push(this._tsHistory.map((s) => {
                 const v = s[key];
