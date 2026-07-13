@@ -520,9 +520,15 @@ const ObservabilityModule = {
             ['cache_hit_rate', 'Cache Hit Rate', 'percent'],
             ['spec_num_steps', 'Speculative Steps', 'integer'],
             ['spec_num_draft_tokens', 'Draft Tokens / Step', 'integer'],
-            ['time_to_first_token_seconds', 'TTFT p95', 'duration_ms', null, 'p95'],
-            ['time_per_output_token_seconds', 'TPOT p95', 'duration_ms', null, 'p95'],
-            ['e2e_request_latency_seconds', 'E2E Latency p95', 'duration_ms', null, 'p95'],
+            ['time_to_first_token_seconds', 'TTFT Avg', 'duration_ms', null, 'avg'],
+            ['time_to_first_token_seconds', 'TTFT P90', 'duration_ms', null, 'p90'],
+            ['time_to_first_token_seconds', 'TTFT P99', 'duration_ms', null, 'p99'],
+            ['time_per_output_token_seconds', 'TPOT Avg', 'duration_ms', null, 'avg'],
+            ['time_per_output_token_seconds', 'TPOT P90', 'duration_ms', null, 'p90'],
+            ['time_per_output_token_seconds', 'TPOT P99', 'duration_ms', null, 'p99'],
+            ['e2e_request_latency_seconds', 'E2E Latency Avg', 'duration_ms', null, 'avg'],
+            ['e2e_request_latency_seconds', 'E2E Latency P90', 'duration_ms', null, 'p90'],
+            ['e2e_request_latency_seconds', 'E2E Latency P99', 'duration_ms', null, 'p99'],
         ] : [
             ['kv_cache_usage_perc', 'Cache Usage', 'percent'],
             ['num_requests_waiting', 'Waiting Requests', 'integer'],
@@ -536,9 +542,15 @@ const ObservabilityModule = {
             ['observability:spec_mean_accept_length', 'Mean Accepted Length', 'number', 'tok/draft'],
             ['observability:spec_draft_token_rate', 'Draft Token Rate', 'number', 'tok/s'],
             ['observability:spec_accepted_token_rate', 'Accepted Token Rate', 'number', 'tok/s'],
-            ['time_to_first_token_seconds', 'TTFT p95', 'duration_ms', null, 'p95'],
-            ['request_time_per_output_token_seconds', 'TPOT p95', 'duration_ms', null, 'p95'],
-            ['e2e_request_latency_seconds', 'E2E Latency p95', 'duration_ms', null, 'p95'],
+            ['time_to_first_token_seconds', 'TTFT Avg', 'duration_ms', null, 'avg'],
+            ['time_to_first_token_seconds', 'TTFT P90', 'duration_ms', null, 'p90'],
+            ['time_to_first_token_seconds', 'TTFT P99', 'duration_ms', null, 'p99'],
+            ['request_time_per_output_token_seconds', 'TPOT Avg', 'duration_ms', null, 'avg'],
+            ['request_time_per_output_token_seconds', 'TPOT P90', 'duration_ms', null, 'p90'],
+            ['request_time_per_output_token_seconds', 'TPOT P99', 'duration_ms', null, 'p99'],
+            ['e2e_request_latency_seconds', 'E2E Latency Avg', 'duration_ms', null, 'avg'],
+            ['e2e_request_latency_seconds', 'E2E Latency P90', 'duration_ms', null, 'p90'],
+            ['e2e_request_latency_seconds', 'E2E Latency P99', 'duration_ms', null, 'p99'],
         ];
 
         const descriptors = specs.map(([name, label, format, unit, percentile]) => {
@@ -610,7 +622,8 @@ const ObservabilityModule = {
             'KV Usage', 'KV Cache Usage', 'Queued Requests', 'Waiting Requests',
             'Generation Throughput', 'Input Token Rate', 'Output Token Rate',
             'Total Token Rate', 'Running Requests', 'Radix Cache Hit Rate',
-            'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT p95', 'E2E Latency p95',
+            'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT Avg', 'TTFT P90', 'TTFT P99',
+            'TPOT Avg', 'TPOT P90', 'TPOT P99', 'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
         ];
         return [...descriptors]
             .sort((a, b) => {
@@ -623,7 +636,9 @@ const ObservabilityModule = {
 
     _overviewStatDescriptors(descriptors) {
         const labels = [
-            'TTFT p95', 'TPOT p95', 'E2E Latency p95',
+            'TTFT Avg', 'TTFT P90', 'TTFT P99',
+            'TPOT Avg', 'TPOT P90', 'TPOT P99',
+            'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
             'Output Token Rate', 'Input Token Rate',
             'Running Requests', 'Waiting Requests', 'Queued Requests',
             'Mean Accepted Length', 'Accepted Length', 'Token Usage', 'Cache Usage',
@@ -1270,7 +1285,7 @@ const ObservabilityModule = {
         }
         if (noData) noData.style.display = 'none';
 
-        const percentiles = ['p50', 'p95', 'p99'];
+        const percentiles = ['avg', 'p90', 'p99'];
 
         const globalMaxSec = Math.max(
             ...latencyMetrics.map(({ entry }) =>
@@ -1301,22 +1316,18 @@ const ObservabilityModule = {
                 }
             }
 
-            const p50 = entry.p50 ?? 0;
-            const p95 = entry.p95 ?? 0;
+            const p90 = entry.p90 ?? 0;
             const p99 = entry.p99 ?? 0;
             const scale = globalMaxSec * 1.05;
-            const p50Pct = (p50 / scale) * 100;
-            const p95Pct = (p95 / scale) * 100;
+            const p90Pct = (p90 / scale) * 100;
             const p99Pct = (p99 / scale) * 100;
             const fillPct = Math.min(p99Pct + 2, 100);
 
             tableHtml += `<td class="obs-pct-bar-cell">
                 <div class="obs-pct-bar">
                     <div class="obs-pct-bar-fill" style="width:${fillPct.toFixed(1)}%"></div>
-                    <div class="obs-pct-pin obs-pct-pin-p50" style="left:${p50Pct.toFixed(1)}%"
-                         title="p50: ${this._formatMs(p50 * 1000)}"></div>
-                    <div class="obs-pct-pin obs-pct-pin-p95" style="left:${p95Pct.toFixed(1)}%"
-                         title="p95: ${this._formatMs(p95 * 1000)}"></div>
+                    <div class="obs-pct-pin obs-pct-pin-p90" style="left:${p90Pct.toFixed(1)}%"
+                         title="p90: ${this._formatMs(p90 * 1000)}"></div>
                     <div class="obs-pct-pin obs-pct-pin-p99" style="left:${p99Pct.toFixed(1)}%"
                          title="p99: ${this._formatMs(p99 * 1000)}"></div>
                 </div>
@@ -1511,8 +1522,8 @@ const ObservabilityModule = {
             if (!entry) continue;
             latencyData[key] = {
                 label: reg.label,
-                p50: entry.p50,
-                p95: entry.p95,
+                avg: entry.avg,
+                p90: entry.p90,
                 p99: entry.p99,
             };
         }

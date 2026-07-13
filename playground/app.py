@@ -242,7 +242,7 @@ class MetricStore:
         if total <= 0:
             return {}
         output = {}
-        for name, ratio in (("p50", .5), ("p95", .95), ("p99", .99)):
+        for name, ratio in (("p50", .5), ("p90", .9), ("p95", .95), ("p99", .99)):
             threshold, previous_limit, previous_count = total * ratio, 0.0, 0.0
             for limit, count in values:
                 if limit == float("inf"):
@@ -262,18 +262,32 @@ class MetricStore:
             if not isinstance(entry, dict):
                 snapshot[key] = entry
                 continue
-            snapshot[key] = entry.get("value", entry.get("p50"))
             if entry.get("type") == "histogram":
-                for percentile in ("p50", "p95", "p99"):
-                    if entry.get(percentile) is not None:
-                        snapshot[f"{key}::{percentile}"] = entry[percentile]
+                continue
+            snapshot[key] = entry.get("value", entry.get("p50"))
         derived = self._derive_rates(snapshot)
         snapshot.update(derived)
         self.history.append(snapshot)
+        if values is None:
+            for entry in self.metrics.values():
+                if isinstance(entry, dict) and entry.get("type") == "histogram":
+                    for statistic in ("p50", "p90", "p95", "p99", "avg"):
+                        entry.pop(statistic, None)
         if derived and values is None:
+            histogram_statistics: Dict[str, Dict[str, float]] = {}
+            for key, value in derived.items():
+                if "::" not in key:
+                    continue
+                base, statistic = key.rsplit("::", 1)
+                entry = self.metrics.get(base)
+                if entry and entry.get("type") == "histogram":
+                    histogram_statistics.setdefault(base, {})[statistic] = value
+            for base, statistics in histogram_statistics.items():
+                self.metrics[base].update(statistics)
             self.metrics.update({
                 key: {"value": value, "type": "derived", "labels": ""}
                 for key, value in derived.items()
+                if "::" not in key
             })
 
     def _derive_rates(self, snapshot: Dict[str, Any]) -> Dict[str, float]:
@@ -296,6 +310,34 @@ class MetricStore:
             return change if change >= 0 else None
 
         output: Dict[str, float] = {}
+
+        # Prometheus histogram buckets, sums, and counts are counters. Use
+        # their deltas between adjacent scrapes so values describe this sample
+        # interval rather than the server lifetime.
+        buckets_by_histogram: Dict[str, list] = {}
+        marker = "_bucket_le_"
+        for key in snapshot:
+            if marker not in key:
+                continue
+            base, raw_limit = key.rsplit(marker, 1)
+            if self.metrics.get(base, {}).get("type") != "histogram":
+                continue
+            count = delta(key)
+            if count is None:
+                continue
+            try:
+                limit = float("inf") if raw_limit == "+Inf" else float(raw_limit)
+            except ValueError:
+                continue
+            buckets_by_histogram.setdefault(base, []).append((limit, count))
+
+        for base, buckets in buckets_by_histogram.items():
+            for percentile, value in self._percentiles(buckets).items():
+                output[f"{base}::{percentile}"] = value
+            total_duration = delta(f"{base}_sum")
+            total_requests = delta(f"{base}_count")
+            if total_duration is not None and total_requests is not None and total_requests > 0:
+                output[f"{base}::avg"] = total_duration / total_requests
         for prefix in ("vllm:", "sglang:"):
             prompt = delta(f"{prefix}prompt_tokens")
             generated = delta(f"{prefix}generation_tokens")

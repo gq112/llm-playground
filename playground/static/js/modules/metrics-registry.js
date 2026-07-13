@@ -121,7 +121,7 @@ export const METRIC_REGISTRY = {
         label: 'E2E Request Latency',
         format: 'duration_ms',
         obsTab: 'latency',
-        histogramDisplay: ['p50', 'p95', 'p99'],
+        histogramDisplay: ['avg', 'p90', 'p99'],
     },
     'vllm:time_to_first_token_seconds': {
         category: 'latency',
@@ -130,21 +130,21 @@ export const METRIC_REGISTRY = {
         thresholds: { warning: 500, danger: 2000 },
         sidebar: true,
         obsTab: 'latency',
-        histogramDisplay: ['p50', 'p95', 'p99'],
+        histogramDisplay: ['avg', 'p90', 'p99'],
     },
     'vllm:inter_token_latency_seconds': {
         category: 'latency',
         label: 'Inter-Token Latency',
         format: 'duration_ms',
         obsTab: 'latency',
-        histogramDisplay: ['p50', 'p95', 'p99'],
+        histogramDisplay: ['avg', 'p90', 'p99'],
     },
     'vllm:request_time_per_output_token_seconds': {
         category: 'latency',
         label: 'Time per Output Token',
         format: 'duration_ms',
         obsTab: 'latency',
-        histogramDisplay: ['p50', 'p95', 'p99'],
+        histogramDisplay: ['avg', 'p90', 'p99'],
     },
 
     // --- SGLang: KV cache & queue ---
@@ -221,21 +221,21 @@ export const METRIC_REGISTRY = {
         format: 'duration_ms',
         thresholds: { warning: 0.5, danger: 2 },
         obsTab: 'latency',
-        histogramDisplay: ['p50', 'p95', 'p99'],
+        histogramDisplay: ['avg', 'p90', 'p99'],
     },
     'sglang:e2e_request_latency_seconds': {
         category: 'latency',
         label: 'E2E Request Latency',
         format: 'duration_ms',
         obsTab: 'latency',
-        histogramDisplay: ['p50', 'p95', 'p99'],
+        histogramDisplay: ['avg', 'p90', 'p99'],
     },
     'sglang:time_per_output_token_seconds': {
         category: 'latency',
         label: 'Time per Output Token',
         format: 'duration_ms',
         obsTab: 'latency',
-        histogramDisplay: ['p50', 'p95', 'p99'],
+        histogramDisplay: ['avg', 'p90', 'p99'],
     },
 
     // --- Derived token flow (counter delta / collection interval) ---

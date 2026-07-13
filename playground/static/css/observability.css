@@ -932,8 +932,7 @@
     transform: translateX(-1px);
 }
 
-.obs-pct-pin-p50 { background: var(--success-color, #22c55e); }
-.obs-pct-pin-p95 { background: var(--warning-color, #f59e0b); }
+.obs-pct-pin-p90 { background: var(--warning-color, #f59e0b); }
 .obs-pct-pin-p99 { background: var(--danger-color, #ef4444); }
 
 .obs-pct-pin-label {
