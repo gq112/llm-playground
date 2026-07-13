@@ -339,6 +339,9 @@ const ObservabilityModule = {
         this._renderAllMetricsTable();
         this._renderAlerts(metrics);
 
+        if (this._currentTab === 'time-series') {
+            this._initTsPicker();
+        }
         if (this._currentTab === 'time-series' && this._uplotChart) {
             this._appendLivePoint(metrics);
         }
@@ -803,20 +806,36 @@ const ObservabilityModule = {
         if (!picker) return;
 
         const backend = this._latestBackend === 'sglang' ? 'sglang' : 'vllm';
-        if (picker.dataset.backend === backend && picker.children.length > 0) return;
+        const latestKeys = Object.keys(this._latestMetrics || {});
+        const selectionHasData = [...this._tsSelectedMetrics].some((key) => latestKeys.includes(key));
+        if (picker.dataset.backend === backend && picker.children.length > 0 && (!latestKeys.length || selectionHasData)) return;
 
-        const defaultMetrics = backend === 'sglang'
+        const preferredMetrics = backend === 'sglang'
             ? ['sglang:token_usage', 'sglang:num_queue_reqs', 'sglang:gen_throughput']
             : ['vllm:kv_cache_usage_perc', 'vllm:num_requests_running', 'vllm:avg_generation_throughput_toks_per_s'];
-        this._tsSelectedMetrics = new Set(defaultMetrics);
+        const derivedMetrics = backend === 'sglang'
+            ? [
+                'observability:prompt_token_rate',
+                'observability:generation_token_rate',
+                'observability:total_token_rate',
+            ]
+            : Object.keys(METRIC_REGISTRY).filter((key) => key.startsWith('observability:'));
 
         const allKeys = Object.keys(METRIC_REGISTRY).filter((k) => {
             const r = METRIC_REGISTRY[k];
-            return (k.startsWith(`${backend}:`) || k.startsWith('observability:')) && r.format !== 'duration_ms';
+            return (k.startsWith(`${backend}:`) || derivedMetrics.includes(k)) && r.format !== 'duration_ms';
         });
+        const availableKeys = allKeys.filter((key) => Object.hasOwn(this._latestMetrics || {}, key));
+        const pickerKeys = availableKeys.length ? availableKeys : allKeys;
+        const defaultMetrics = preferredMetrics.filter((key) => pickerKeys.includes(key));
+        for (const key of pickerKeys) {
+            if (defaultMetrics.length >= 3) break;
+            if (!defaultMetrics.includes(key)) defaultMetrics.push(key);
+        }
+        this._tsSelectedMetrics = new Set(defaultMetrics);
 
         let html = '';
-        for (const key of allKeys) {
+        for (const key of pickerKeys) {
             const reg = METRIC_REGISTRY[key];
             const checked = defaultMetrics.includes(key) ? 'checked' : '';
             html += `<label><input type="checkbox" value="${key}" ${checked} /> ${this._escapeHtml(reg.label)}</label>`;
