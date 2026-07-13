@@ -13,6 +13,103 @@ import {
 } from './metrics-registry.js';
 import { metricsPoller } from './metrics-poller.js';
 
+class LocalLineChart {
+    constructor(options, data, target) {
+        this.options = options;
+        this.data = data;
+        this.canvas = document.createElement('canvas');
+        this.canvas.className = 'local-line-chart';
+        target.replaceChildren(this.canvas);
+        this._render();
+    }
+
+    setData(data) {
+        this.data = data;
+        this._render();
+    }
+
+    destroy() {
+        this.canvas.remove();
+    }
+
+    _render() {
+        const { width, height, series } = this.options;
+        const ratio = window.devicePixelRatio || 1;
+        const canvas = this.canvas;
+        canvas.width = Math.max(1, Math.floor(width * ratio));
+        canvas.height = Math.max(1, Math.floor(height * ratio));
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+
+        const [timestamps = [], ...values] = this.data;
+        const numbers = values.flat().filter(Number.isFinite);
+        if (!timestamps.length || !numbers.length) {
+            ctx.fillStyle = '#9eacc4';
+            ctx.font = '13px system-ui, sans-serif';
+            ctx.fillText('No numeric data to chart', 16, 28);
+            return;
+        }
+
+        const padding = { top: 12, right: 14, bottom: 28, left: 52 };
+        const plotWidth = Math.max(1, width - padding.left - padding.right);
+        const plotHeight = Math.max(1, height - padding.top - padding.bottom);
+        const xMin = timestamps[0];
+        const xMax = timestamps[timestamps.length - 1] || xMin + 1;
+        const rawMin = Math.min(...numbers);
+        const rawMax = Math.max(...numbers);
+        const spread = rawMax - rawMin || Math.max(Math.abs(rawMax) * 0.1, 1);
+        const yMin = rawMin - spread * 0.08;
+        const yMax = rawMax + spread * 0.08;
+        const x = (value) => padding.left + ((value - xMin) / (xMax - xMin || 1)) * plotWidth;
+        const y = (value) => padding.top + (1 - (value - yMin) / (yMax - yMin || 1)) * plotHeight;
+
+        ctx.font = '11px system-ui, sans-serif';
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
+        ctx.fillStyle = '#9eacc4';
+        ctx.lineWidth = 1;
+        for (let step = 0; step <= 4; step++) {
+            const yPos = padding.top + (plotHeight * step) / 4;
+            ctx.beginPath();
+            ctx.moveTo(padding.left, yPos);
+            ctx.lineTo(width - padding.right, yPos);
+            ctx.stroke();
+            const label = (yMax - ((yMax - yMin) * step) / 4).toPrecision(3);
+            ctx.fillText(label, 3, yPos + 4);
+        }
+
+        ctx.fillText(new Date(xMin * 1000).toLocaleTimeString(), padding.left, height - 7);
+        const endLabel = new Date(xMax * 1000).toLocaleTimeString();
+        ctx.fillText(endLabel, Math.max(padding.left, width - padding.right - ctx.measureText(endLabel).width), height - 7);
+
+        values.forEach((row, index) => {
+            ctx.strokeStyle = series[index + 1]?.stroke || '#648cff';
+            ctx.lineWidth = series[index + 1]?.width || 2;
+            ctx.beginPath();
+            let drawing = false;
+            row.forEach((value, pointIndex) => {
+                if (!Number.isFinite(value)) {
+                    drawing = false;
+                    return;
+                }
+                const xPos = x(timestamps[pointIndex]);
+                const yPos = y(value);
+                if (drawing) ctx.lineTo(xPos, yPos);
+                else ctx.moveTo(xPos, yPos);
+                drawing = true;
+            });
+            ctx.stroke();
+        });
+    }
+}
+
+function createLineChart(options, data, target) {
+    return window.uPlot ? new window.uPlot(options, data, target) : new LocalLineChart(options, data, target);
+}
+
 const ObservabilityModule = {
     templateLoaded: false,
     _unsubscribe: null,
@@ -394,7 +491,7 @@ const ObservabilityModule = {
         container.innerHTML = chartMetrics.map((descriptor, index) =>
             `<div class="obs-live-chart"><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)} · last 5 min</span><div id="obs-live-chart-${index}"></div></div>`
         ).join('');
-        if (!window.uPlot || this._liveHistory.length === 0) return;
+        if (this._liveHistory.length === 0) return;
 
         const colors = ['#60a5fa', '#f59e0b', '#34d399'];
         chartMetrics.forEach((descriptor, index) => {
@@ -403,7 +500,7 @@ const ObservabilityModule = {
             const timestamps = this._liveHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
             const values = this._liveHistory.map((point) => point[descriptor.historyKey] ?? null);
             try {
-                this._liveCharts.push(new uPlot({
+                this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
                     height: 120,
                     series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 2 }],
@@ -867,7 +964,7 @@ const ObservabilityModule = {
 
         wrap.innerHTML = '';
         try {
-            this._uplotChart = new uPlot(opts, data, wrap);
+            this._uplotChart = createLineChart(opts, data, wrap);
         } catch (e) {
             console.error('uPlot init error:', e);
             wrap.innerHTML = `<div style="padding:20px;color:var(--text-secondary)">Chart error: ${e.message}</div>`;
