@@ -126,6 +126,7 @@ class LocalLineChart {
             ctx.strokeStyle = series[index + 1]?.stroke || '#648cff';
             ctx.lineWidth = series[index + 1]?.width || 1;
             ctx.beginPath();
+            const points = [];
             let drawing = false;
             row.forEach((value, pointIndex) => {
                 if (!Number.isFinite(value)) {
@@ -134,11 +135,18 @@ class LocalLineChart {
                 }
                 const xPos = x(timestamps[pointIndex]);
                 const yPos = y(value);
+                points.push([xPos, yPos]);
                 if (drawing) ctx.lineTo(xPos, yPos);
                 else ctx.moveTo(xPos, yPos);
                 drawing = true;
             });
             ctx.stroke();
+            ctx.fillStyle = series[index + 1]?.stroke || '#648cff';
+            points.forEach(([xPos, yPos]) => {
+                ctx.beginPath();
+                ctx.arc(xPos, yPos, 2.25, 0, Math.PI * 2);
+                ctx.fill();
+            });
         });
     }
 
