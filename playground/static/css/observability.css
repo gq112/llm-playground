@@ -311,7 +311,7 @@
     position: absolute;
     inset: 0 auto 0 0;
     width: 3px;
-    background: var(--primary-color);
+    background: var(--stat-accent, var(--primary-color));
 }
 
 .obs-live-stat-label {
@@ -331,6 +331,15 @@
     color: var(--text-primary);
     font-size: 1.15rem;
     font-weight: 700;
+}
+
+.obs-live-stat-note {
+    display: block;
+    overflow: hidden;
+    color: var(--text-tertiary, var(--text-secondary));
+    font-size: .65rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .obs-live-stat-meta {

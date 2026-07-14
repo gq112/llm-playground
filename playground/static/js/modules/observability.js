@@ -666,8 +666,48 @@ const ObservabilityModule = {
     _renderLiveStats(metrics) {
         const container = document.getElementById('obs-live-stats');
         if (!container) return;
-        container.replaceChildren();
-        container.style.display = 'none';
+        const prefix = this._latestBackend === 'sglang' ? 'sglang:' : 'vllm:';
+        const cards = [
+            {
+                label: 'Cumulative Requests',
+                keys: [`${prefix}num_requests`, `${prefix}requests`, `${prefix}request_success`],
+                format: 'integer',
+                note: 'service process total',
+                color: '#60a5fa',
+            },
+            {
+                label: 'Cumulative Input Tokens',
+                keys: [`${prefix}prompt_tokens`],
+                format: 'integer',
+                note: 'service process total',
+                color: '#a78bfa',
+            },
+            {
+                label: 'Cumulative Output Tokens',
+                keys: [`${prefix}generation_tokens`],
+                format: 'integer',
+                note: 'service process total',
+                color: '#34d399',
+            },
+            {
+                label: 'Decode Throughput',
+                keys: ['observability:generation_token_rate'],
+                format: 'number',
+                unit: 'tok/s',
+                note: 'output tokens / sample interval',
+                color: '#f97316',
+            },
+        ].map((card) => {
+            const key = card.keys.find((candidate) => metrics[candidate]?.value != null);
+            return key ? { ...card, value: metrics[key].value } : null;
+        }).filter(Boolean);
+
+        container.style.display = cards.length ? '' : 'none';
+        container.innerHTML = cards.map((card) => `<article class="obs-live-stat" style="--stat-accent:${card.color}">
+            <span class="obs-live-stat-label">${this._escapeHtml(card.label)}</span>
+            <strong class="obs-live-stat-current">${formatMetricValue(card.value, card.format, card.unit)}</strong>
+            <span class="obs-live-stat-note">${this._escapeHtml(card.note)}</span>
+        </article>`).join('');
     },
 
     _rankLiveDescriptors(descriptors, limit) {
