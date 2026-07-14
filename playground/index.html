@@ -11,11 +11,14 @@
     <header class="dashboard-topbar">
         <a class="dashboard-brand" href="/" aria-label="推理指标观测仪表盘首页">
             <span class="dashboard-mark" aria-hidden="true">AI</span>
-            <span>推理指标<strong>观测仪表盘</strong></span>
+            <span class="dashboard-brand-copy"><small>INFERENCE OBSERVABILITY</small>推理指标<strong>观测仪表盘</strong></span>
         </a>
         <form class="target-form" id="target-form">
-            <label for="target-url">Metrics source</label>
-            <input id="target-url" type="url" placeholder="vLLM :8000 or SGLang :30000" autocomplete="url" required>
+            <label for="target-url">监测服务</label>
+            <select id="target-saved-sources" aria-label="已保存的模型服务">
+                <option value="">已保存服务</option>
+            </select>
+            <input id="target-url" type="url" placeholder="http://host:port" autocomplete="url" required>
             <input id="target-api-key" type="password" placeholder="API key (optional)" autocomplete="off">
             <button type="submit" class="target-connect">Connect</button>
         </form>
