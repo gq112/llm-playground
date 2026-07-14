@@ -699,10 +699,12 @@ const ObservabilityModule = {
             },
         ].map((card) => {
             const key = card.keys.find((candidate) => metrics[candidate]?.value != null);
-            return key ? { ...card, value: metrics[key].value } : null;
-        }).filter(Boolean);
+            return key
+                ? { ...card, value: metrics[key].value }
+                : { ...card, value: null, note: 'not exposed by this runtime' };
+        });
 
-        container.style.display = cards.length ? '' : 'none';
+        container.style.display = '';
         container.innerHTML = cards.map((card) => `<article class="obs-live-stat" style="--stat-accent:${card.color}">
             <span class="obs-live-stat-label">${this._escapeHtml(card.label)}</span>
             <strong class="obs-live-stat-current">${formatMetricValue(card.value, card.format, card.unit)}</strong>
