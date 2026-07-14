@@ -538,8 +538,8 @@ const ObservabilityModule = {
         const isSglang = backend === 'sglang';
         const prefix = isSglang ? 'sglang:' : 'vllm:';
         const specs = isSglang ? [
-            ['token_usage', 'Cache Usage', 'percent'],
-            ['num_used_tokens', 'Token Usage', 'integer', 'tokens'],
+            ['token_usage', 'Token Usage (%)', 'percent'],
+            ['num_used_tokens', 'Token Usage (tokens)', 'integer', 'tokens'],
             ['num_queue_reqs', 'Queued Requests', 'integer'],
             ['gen_throughput', 'Generation Throughput', 'number', 'tok/s'],
             ['observability:prompt_token_rate', 'Input Token Rate', 'number', 'tok/s'],
@@ -675,7 +675,7 @@ const ObservabilityModule = {
             'Stage Latency Avg', 'Stage Latency P90', 'Stage Latency P99',
             'Output Token Rate', 'Input Token Rate',
             'Running Requests', 'Waiting Requests', 'Queued Requests',
-            'Mean Accepted Length', 'Accepted Length', 'Token Usage', 'Cache Usage',
+            'Mean Accepted Length', 'Accepted Length', 'Token Usage (tokens)', 'Token Usage (%)', 'Cache Usage',
         ];
         return labels
             .map((label) => descriptors.find((descriptor) => descriptor.label === label))
