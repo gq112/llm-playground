@@ -267,7 +267,7 @@ export const METRIC_REGISTRY = {
     },
     'observability:generation_token_rate': {
         category: 'tokens',
-        label: 'Output Token Rate',
+        label: 'Decode Throughput',
         unit: 'tok/s',
         format: 'number',
         obsTab: 'overview',

@@ -1,4 +1,4 @@
-import ObservabilityModule from './modules/observability.js?v=20260714-cards';
+import ObservabilityModule from './modules/observability.js?v=20260714-throughput';
 
 const targetForm = document.getElementById('target-form');
 const targetUrl = document.getElementById('target-url');

@@ -564,7 +564,7 @@ const ObservabilityModule = {
             ['num_queue_reqs', 'Queued Requests', 'integer'],
             ['gen_throughput', 'Generation Throughput', 'number', 'tok/s'],
             ['observability:prompt_token_rate', 'Input Token Rate', 'number', 'tok/s'],
-            ['observability:generation_token_rate', 'Output Token Rate', 'number', 'tok/s'],
+            ['observability:generation_token_rate', 'Decode Throughput', 'number', 'tok/s'],
             ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
             ['num_running_reqs', 'Running Requests', 'integer'],
             ['cache_hit_rate', 'Cache Hit Rate', 'percent'],
@@ -587,7 +587,7 @@ const ObservabilityModule = {
             ['num_requests_waiting', 'Waiting Requests', 'integer'],
             ['avg_generation_throughput_toks_per_s', 'Generation Throughput', 'number', 'tok/s'],
             ['observability:prompt_token_rate', 'Input Token Rate', 'number', 'tok/s'],
-            ['observability:generation_token_rate', 'Output Token Rate', 'number', 'tok/s'],
+            ['observability:generation_token_rate', 'Decode Throughput', 'number', 'tok/s'],
             ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
             ['num_requests_running', 'Running Requests', 'integer'],
             ['prefix_cache_hit_rate', 'Prefix Cache Hit Rate', 'percent'],
@@ -689,14 +689,6 @@ const ObservabilityModule = {
                 note: 'service process total',
                 color: '#34d399',
             },
-            {
-                label: 'Decode Throughput',
-                keys: ['observability:generation_token_rate'],
-                format: 'number',
-                unit: 'tok/s',
-                note: 'output tokens / sample interval',
-                color: '#f97316',
-            },
         ].map((card) => {
             const key = card.keys.find((candidate) => metrics[candidate]?.value != null);
             return key
@@ -715,7 +707,7 @@ const ObservabilityModule = {
     _rankLiveDescriptors(descriptors, limit) {
         const priority = [
             'KV Usage', 'KV Cache Usage', 'Queued Requests', 'Waiting Requests',
-            'Generation Throughput', 'Input Token Rate', 'Output Token Rate',
+            'Generation Throughput', 'Input Token Rate', 'Decode Throughput',
             'Total Token Rate', 'Running Requests', 'Radix Cache Hit Rate',
             'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT Avg', 'TTFT P90', 'TTFT P99',
             'TPOT Avg', 'TPOT P90', 'TPOT P99', 'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
@@ -736,7 +728,7 @@ const ObservabilityModule = {
             'TPOT Avg', 'TPOT P90', 'TPOT P99',
             'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
             'Stage Latency Avg', 'Stage Latency P90', 'Stage Latency P99',
-            'Output Token Rate', 'Input Token Rate',
+            'Decode Throughput', 'Input Token Rate',
             'Running Requests', 'Waiting Requests', 'Queued Requests',
             'Mean Accepted Length', 'Accepted Length', 'Token Usage (tokens)', 'Token Usage (%)', 'Cache Usage',
         ];
