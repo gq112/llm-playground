@@ -125,6 +125,16 @@ class MetricStore:
             await self.scrape()
             await asyncio.sleep(self.interval)
 
+    def _mark_unavailable(self) -> None:
+        """Invalidate current values after a failed remote scrape.
+
+        History is intentionally retained for later inspection, but it must
+        never be presented as the current state of an unavailable service.
+        """
+        self.metrics.clear()
+        self.last_scrape = None
+        self.last_simulated = None
+
     async def scrape(self) -> bool:
         if not self.target_url:
             return False
@@ -140,9 +150,11 @@ class MetricStore:
             if not self._warned:
                 logger.warning("Cannot scrape vLLM metrics from %s: %s", self.target_url, exc)
                 self._warned = True
+            self._mark_unavailable()
             return False
 
         if not parsed:
+            self._mark_unavailable()
             return False
         self.metrics = parsed
         self.last_scrape = datetime.now()

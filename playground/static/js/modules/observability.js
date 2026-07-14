@@ -472,11 +472,13 @@ const ObservabilityModule = {
         this._updateBackendBadge(all?.backend);
 
         if (!all || !all.metrics) {
+            this._clearUnavailableMetrics();
             this._showNoData(true, all);
             return;
         }
         const metrics = all.metrics;
         if (Object.keys(metrics).length === 0) {
+            this._clearUnavailableMetrics();
             this._showNoData(true, all);
             return;
         }
@@ -510,6 +512,17 @@ const ObservabilityModule = {
         if (this._currentTab === 'latency') {
             this._renderLatency(metrics);
         }
+    },
+
+    _clearUnavailableMetrics() {
+        this._latestMetrics = null;
+        this._latestBackend = null;
+        this._liveDescriptors = [];
+        this._liveHistory = [];
+        this._liveCharts.forEach((chart) => chart.destroy());
+        this._liveCharts = [];
+        const liveCharts = document.getElementById('obs-live-charts');
+        if (liveCharts) liveCharts.replaceChildren();
     },
 
     _updateBackendBadge(backend) {
