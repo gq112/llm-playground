@@ -55,6 +55,12 @@ export const METRIC_REGISTRY = {
         format: 'percent',
         obsTab: 'overview',
     },
+    'observability:kv_evictions_per_sample': {
+        category: 'kv-cache',
+        label: 'KV Evictions / Sample',
+        format: 'integer',
+        obsTab: 'overview',
+    },
     'vllm:kv_block_idle_before_evict_seconds': {
         category: 'kv-cache',
         label: 'KV Idle Time Before Eviction',
@@ -64,8 +70,8 @@ export const METRIC_REGISTRY = {
     },
     'vllm:kv_block_idle_before_evict_seconds_count': {
         category: 'kv-cache',
-        label: 'Sampled KV Evictions',
-        unit: 'blocks',
+        label: 'Eviction Idle-Time Samples',
+        unit: 'samples',
         format: 'integer',
         obsTab: 'overview',
     },

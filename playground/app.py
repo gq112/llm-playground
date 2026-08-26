@@ -61,7 +61,8 @@ class MetricStore:
         "input_tokens": ("prompt_tokens",),
         "output_tokens": ("generation_tokens",),
         "kv_hits": ("cached_tokens", "prefix_cache_hits"),
-        "kv_evictions": ("evicted_tokens", "kv_block_idle_before_evict_seconds_count"),
+        "kv_queries": ("prefix_cache_queries",),
+        "kv_evictions": ("evicted_tokens",),
     }
     _LABEL_PATTERN = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"((?:\\.|[^"\\])*)"')
 
@@ -271,37 +272,54 @@ class MetricStore:
         retained total instead of making the displayed cumulative value drop.
         """
         observed_at = now or datetime.now()
-        grouped: Dict[tuple, Dict[str, float]] = {}
+        grouped: Dict[tuple, Dict[str, Any]] = {}
         candidate_keys = {
             f"{runtime}:{suffix}"
             for runtime in ("vllm", "sglang")
             for suffixes in self._CUMULATIVE_FIELD_SUFFIXES.values()
             for suffix in suffixes
         }
+        gauge_keys = {"sglang:cache_hit_rate", "vllm:prefix_cache_hit_rate"}
         for sample in samples:
             key = sample.get("key", "")
             value = sample.get("value")
-            if key not in candidate_keys or not isinstance(value, (int, float)) or not math.isfinite(value):
+            if (
+                key not in candidate_keys | gauge_keys
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
                 continue
             runtime = key.split(":", 1)[0]
             labels = sample.get("labels") or {}
             engine_type = labels.get("engine_type") or runtime
             model_name = labels.get("model_name") or labels.get("served_model_name") or "unknown"
             group_key = (runtime, engine_type, model_name)
-            group_values = grouped.setdefault(group_key, {})
-            group_values[key] = group_values.get(key, 0.0) + value
+            group_values = grouped.setdefault(group_key, {"counters": {}, "gauges": {}})
+            if key in gauge_keys:
+                gauge = group_values["gauges"].setdefault(key, {"sum": 0.0, "count": 0})
+                gauge["sum"] += value
+                gauge["count"] += 1
+            else:
+                counters = group_values["counters"]
+                counters[key] = counters.get(key, 0.0) + value
 
-        for (runtime, engine_type, model_name), raw_metrics in grouped.items():
+        for (runtime, engine_type, model_name), observed in grouped.items():
             group_key = (runtime, engine_type, model_name)
-            group = self.cumulative_groups.setdefault(group_key, {
-                "runtime": runtime,
-                "engine_type": engine_type,
-                "model_name": model_name,
-                "last_seen": observed_at,
-                "counters": {},
-            })
+            group = self.cumulative_groups.get(group_key)
+            previous_seen = group["last_seen"] if group else None
+            if group is None:
+                group = {
+                    "runtime": runtime,
+                    "engine_type": engine_type,
+                    "model_name": model_name,
+                    "last_seen": observed_at,
+                    "counters": {},
+                }
+                self.cumulative_groups[group_key] = group
             group["last_seen"] = observed_at
             counters = group["counters"]
+            deltas = {}
+            raw_metrics = observed["counters"]
             for field, suffixes in self._CUMULATIVE_FIELD_SUFFIXES.items():
                 candidates = [f"{runtime}:{suffix}" for suffix in suffixes]
                 source = next((candidate for candidate in candidates if candidate in raw_metrics), None)
@@ -311,6 +329,7 @@ class MetricStore:
                 state = counters.get(field)
                 if state is None:
                     counters[field] = {"source": source, "raw": raw_value, "total": raw_value}
+                    deltas[field] = raw_value
                     continue
                 if state["source"] != source:
                     state.update({"source": source, "raw": raw_value})
@@ -318,6 +337,19 @@ class MetricStore:
                 increment = raw_value - state["raw"] if raw_value >= state["raw"] else raw_value
                 state["raw"] = raw_value
                 state["total"] += increment
+                deltas[field] = increment
+
+            hit_rate_key = f"{runtime}:{'cache_hit_rate' if runtime == 'sglang' else 'prefix_cache_hit_rate'}"
+            hit_rate_gauge = observed["gauges"].get(hit_rate_key)
+            if hit_rate_gauge and hit_rate_gauge["count"]:
+                group["cache_hit_rate"] = hit_rate_gauge["sum"] / hit_rate_gauge["count"]
+            elif deltas.get("kv_queries", 0) > 0:
+                group["cache_hit_rate"] = deltas.get("kv_hits", 0) / deltas["kv_queries"]
+
+            if previous_seen and "kv_evictions" in deltas:
+                group["kv_evictions_per_sample"] = deltas["kv_evictions"]
+            if runtime == "sglang":
+                group["kv_eviction_unit"] = "tokens"
 
         self._cleanup_cumulative_groups(observed_at)
 
@@ -344,7 +376,11 @@ class MetricStore:
                 "values": {
                     field: state["total"]
                     for field, state in group["counters"].items()
+                    if field in {"requests", "input_tokens", "output_tokens"}
                 },
+                "cache_hit_rate": group.get("cache_hit_rate"),
+                "kv_evictions_per_sample": group.get("kv_evictions_per_sample"),
+                "kv_eviction_unit": group.get("kv_eviction_unit"),
             })
         return sorted(output, key=lambda item: (item["model_name"], item["runtime"], item["engine_type"]))
 
@@ -542,6 +578,10 @@ class MetricStore:
             if prompt is not None and generated is not None:
                 output["observability:total_token_rate"] = (prompt + generated) / elapsed
 
+        sglang_evictions = delta("sglang:evicted_tokens")
+        if sglang_evictions is not None:
+            output["observability:kv_evictions_per_sample"] = sglang_evictions
+
         accepted = delta("vllm:spec_decode_num_accepted_tokens")
         drafts = delta("vllm:spec_decode_num_draft_tokens")
         rounds = delta("vllm:spec_decode_num_drafts")
@@ -669,10 +709,18 @@ async def simulate_metrics(request: SimulateMetricsRequest) -> Dict[str, str]:
                      for key, value in values.items()}
     now = datetime.now()
     store.cumulative_groups.clear()
-    store._update_cumulative_groups([
+    cumulative_samples = [
         {"key": key, "value": entry["value"], "labels": {"model_name": "demo", "engine_type": "demo"}}
         for key, entry in store.metrics.items()
-    ], now)
+    ]
+    store._update_cumulative_groups([
+        {
+            **sample,
+            "value": max(0, sample["value"] - 9) if "evict" in sample["key"] else sample["value"] * 0.9,
+        }
+        for sample in cumulative_samples
+    ], now - timedelta(seconds=1))
+    store._update_cumulative_groups(cumulative_samples, now)
     store.last_simulated, store.last_scrape = now, None
     for index in range(30):
         factor = 1 + random.uniform(-.12, .12)

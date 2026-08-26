@@ -574,7 +574,7 @@ const ObservabilityModule = {
             ['num_running_reqs', 'Running Requests', 'integer'],
             ['cache_hit_rate', 'Cache Hit Rate', 'percent'],
             ['cached_tokens', 'KV Cache Hits', 'integer', 'tokens'],
-            ['evicted_tokens', 'KV Cache Evictions', 'integer', 'tokens'],
+            ['observability:kv_evictions_per_sample', 'KV Evictions / Sample', 'integer', 'tokens'],
             ['spec_num_steps', 'Speculative Steps', 'integer'],
             ['spec_num_draft_tokens', 'Draft Tokens / Step', 'integer'],
             ['time_to_first_token_seconds', 'TTFT Avg', 'duration_ms', null, 'avg'],
@@ -600,7 +600,6 @@ const ObservabilityModule = {
             ['observability:prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
             ['prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
             ['prefix_cache_hits', 'KV Cache Hits', 'integer', 'tokens'],
-            ['kv_block_idle_before_evict_seconds_count', 'Sampled KV Evictions', 'integer', 'blocks'],
             ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time Avg', 'duration_ms', null, 'avg'],
             ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time P90', 'duration_ms', null, 'p90'],
             ['observability:spec_acceptance_rate', 'Draft Acceptance Rate', 'percent'],
@@ -692,11 +691,12 @@ const ObservabilityModule = {
                 requests: valueFor([`${prefix}num_requests`, `${prefix}requests`, `${prefix}request_success`]),
                 input_tokens: valueFor([`${prefix}prompt_tokens`]),
                 output_tokens: valueFor([`${prefix}generation_tokens`]),
-                kv_hits: valueFor(isSglang ? ['sglang:cached_tokens'] : ['vllm:prefix_cache_hits']),
-                kv_evictions: valueFor(isSglang
-                    ? ['sglang:evicted_tokens']
-                    : ['vllm:kv_block_idle_before_evict_seconds_count']),
             },
+            cache_hit_rate: valueFor(isSglang
+                ? ['sglang:cache_hit_rate']
+                : ['observability:prefix_cache_hit_rate', 'vllm:prefix_cache_hit_rate']),
+            kv_evictions_per_sample: null,
+            kv_eviction_unit: isSglang ? 'tokens' : null,
         };
     },
 
@@ -728,20 +728,6 @@ const ObservabilityModule = {
                 note: 'aggregated output tokens',
                 color: '#34d399',
             },
-            {
-                label: 'Cumulative KV Hits',
-                field: 'kv_hits',
-                format: 'integer',
-                note: 'aggregated cached tokens',
-                color: '#f472b6',
-            },
-            {
-                label: 'Cumulative KV Evictions',
-                field: 'kv_evictions',
-                format: 'integer',
-                note: 'aggregated eviction counter',
-                color: '#fb923c',
-            },
         ];
 
         container.style.display = '';
@@ -755,11 +741,33 @@ const ObservabilityModule = {
             const expires = Number.isFinite(group.expires_in_seconds)
                 ? `${Math.ceil(group.expires_in_seconds)}s TTL`
                 : `${this._cumulativeTtlSeconds}s TTL`;
+            const operationalSpecs = [
+                {
+                    label: 'Cache Hit Rate',
+                    format: 'percent',
+                    value: group.cache_hit_rate,
+                    note: 'recent hit / query ratio',
+                    color: '#f472b6',
+                },
+            ];
+            if (group.runtime === 'sglang') {
+                operationalSpecs.push({
+                    label: 'KV Evictions / Sample',
+                    format: 'integer',
+                    unit: group.kv_eviction_unit,
+                    value: group.kv_evictions_per_sample,
+                    note: 'tokens evicted in this sample',
+                    color: '#fb923c',
+                });
+            }
             const cards = cardSpecs.map((spec) => ({
                 ...spec,
                 value: group.values?.[spec.field] ?? null,
                 note: group.values?.[spec.field] == null ? 'not exposed by this runtime' : spec.note,
-            }));
+            })).concat(operationalSpecs.map((spec) => ({
+                ...spec,
+                note: spec.value == null ? 'waiting for the next counter sample' : spec.note,
+            })));
             return `<section class="obs-live-stat-group">
                 <div class="obs-live-stat-group-heading">
                     <div><strong>${this._escapeHtml(group.model_name || 'unknown')}</strong><span>${this._escapeHtml(engine)}</span></div>
@@ -767,7 +775,7 @@ const ObservabilityModule = {
                 </div>
                 <div class="obs-live-stat-grid">${cards.map((card) => `<article class="obs-live-stat" style="--stat-accent:${card.color}">
                     <span class="obs-live-stat-label">${this._escapeHtml(card.label)}</span>
-                    <strong class="obs-live-stat-current">${formatMetricValue(card.value, card.format)}</strong>
+                    <strong class="obs-live-stat-current">${formatMetricValue(card.value, card.format, card.unit)}</strong>
                     <span class="obs-live-stat-note">${this._escapeHtml(card.note)}</span>
                 </article>`).join('')}</div>
             </section>`;
@@ -779,7 +787,7 @@ const ObservabilityModule = {
             'KV Usage', 'KV Cache Usage', 'Queued Requests', 'Waiting Requests',
             'Generation Throughput', 'Input Token Rate', 'Decode Throughput',
             'Total Token Rate', 'Running Requests', 'Radix Cache Hit Rate',
-            'KV Cache Hit Rate', 'KV Cache Hits', 'KV Cache Evictions', 'Sampled KV Evictions',
+            'KV Cache Hit Rate', 'KV Cache Hits', 'KV Evictions / Sample',
             'Eviction Idle Time Avg', 'Eviction Idle Time P90',
             'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT Avg', 'TTFT P90', 'TTFT P99',
             'TPOT Avg', 'TPOT P90', 'TPOT P99', 'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
@@ -804,7 +812,7 @@ const ObservabilityModule = {
             'Running Requests', 'Waiting Requests', 'Queued Requests',
             'Mean Accepted Length', 'Accepted Length', 'Token Usage (tokens)', 'Token Usage (%)', 'Cache Usage',
             'Radix Cache Hit Rate', 'KV Cache Hit Rate', 'KV Cache Hits',
-            'KV Cache Evictions', 'Sampled KV Evictions',
+            'KV Evictions / Sample',
             'Eviction Idle Time Avg', 'Eviction Idle Time P90',
         ];
         return labels

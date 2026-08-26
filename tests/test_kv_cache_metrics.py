@@ -98,6 +98,9 @@ sglang:generation_tokens_total{model_name="model-a",engine_type="unified",tp_ran
 # TYPE sglang:cached_tokens_total counter
 sglang:cached_tokens_total{model_name="model-a",engine_type="unified",cache_source="device"} 80
 sglang:cached_tokens_total{model_name="model-a",engine_type="unified",cache_source="host"} 40
+# TYPE sglang:cache_hit_rate gauge
+sglang:cache_hit_rate{model_name="model-a",engine_type="unified",tp_rank="0"} 0.5
+sglang:cache_hit_rate{model_name="model-a",engine_type="unified",tp_rank="1"} 0.7
 # TYPE sglang:evicted_tokens_total counter
 sglang:evicted_tokens_total{model_name="model-a",engine_type="unified",tp_rank="0"} 6
 sglang:evicted_tokens_total{model_name="model-a",engine_type="unified",tp_rank="1"} 4
@@ -115,10 +118,11 @@ sglang:evicted_tokens_total{model_name="model-a",engine_type="unified",tp_rank="
         "requests": 12,
         "input_tokens": 300,
         "output_tokens": 70,
-        "kv_hits": 120,
-        "kv_evictions": 10,
     }
     assert groups[1]["values"] == {"requests": 7}
+    assert groups[0]["cache_hit_rate"] == pytest.approx(0.6)
+    assert groups[0]["kv_evictions_per_sample"] is None
+    assert groups[0]["kv_eviction_unit"] == "tokens"
 
 
 def test_cumulative_counter_reset_continues_and_stale_group_expires() -> None:
@@ -141,7 +145,7 @@ def test_cumulative_counter_reset_continues_and_stale_group_expires() -> None:
     assert store.get_cumulative_groups(now + timedelta(seconds=8)) == []
 
 
-def test_vllm_eviction_histogram_count_keeps_group_labels() -> None:
+def test_vllm_eviction_histogram_count_is_not_exposed_as_evictions() -> None:
     store = MetricStore()
     now = datetime.now()
     _, samples = store._parse_prometheus_payload(
@@ -155,5 +159,54 @@ vllm:kv_block_idle_before_evict_seconds_count{model_name="model-a",engine_type="
     store._update_cumulative_groups(samples, now)
     groups = store.get_cumulative_groups(now)
 
-    assert groups[0]["model_name"] == "model-a"
-    assert groups[0]["values"]["kv_evictions"] == 5
+    assert groups == []
+
+
+def test_grouped_vllm_hit_rate_uses_counter_deltas_without_eviction_value() -> None:
+    store = MetricStore()
+    now = datetime.now()
+
+    store._update_cumulative_groups([
+        {"key": "vllm:prefix_cache_hits", "value": 100, "labels": {"model_name": "model-a"}},
+        {"key": "vllm:prefix_cache_queries", "value": 200, "labels": {"model_name": "model-a"}},
+    ], now)
+    store._update_cumulative_groups([
+        {"key": "vllm:prefix_cache_hits", "value": 130, "labels": {"model_name": "model-a"}},
+        {"key": "vllm:prefix_cache_queries", "value": 240, "labels": {"model_name": "model-a"}},
+    ], now + timedelta(seconds=2))
+
+    group = store.get_cumulative_groups(now + timedelta(seconds=2))[0]
+    assert group["cache_hit_rate"] == pytest.approx(0.75)
+    assert group["kv_evictions_per_sample"] is None
+    assert group["kv_eviction_unit"] is None
+
+
+def test_grouped_sglang_evictions_use_counter_delta_per_sample() -> None:
+    store = MetricStore()
+    now = datetime.now()
+
+    store._update_cumulative_groups([
+        {"key": "sglang:evicted_tokens", "value": 10, "labels": {"model_name": "model-a"}},
+    ], now)
+    store._update_cumulative_groups([
+        {"key": "sglang:evicted_tokens", "value": 14, "labels": {"model_name": "model-a"}},
+    ], now + timedelta(seconds=2))
+
+    group = store.get_cumulative_groups(now + timedelta(seconds=2))[0]
+    assert group["kv_evictions_per_sample"] == 4
+    assert group["kv_eviction_unit"] == "tokens"
+
+
+def test_history_uses_eviction_delta_for_each_sample() -> None:
+    store = MetricStore()
+    now = datetime.now()
+    store.metrics = {
+        "sglang:evicted_tokens": {"value": 14, "type": "counter", "labels": ""},
+    }
+    store.history.append(_snapshot(now, **{"sglang:evicted_tokens": 10}))
+
+    derived = store._derive_rates(
+        _snapshot(now + timedelta(seconds=2), **{"sglang:evicted_tokens": 14})
+    )
+
+    assert derived["observability:kv_evictions_per_sample"] == 4
