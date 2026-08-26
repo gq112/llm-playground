@@ -63,6 +63,22 @@ class MetricStore:
         "kv_hits": ("cached_tokens", "prefix_cache_hits"),
         "kv_queries": ("prefix_cache_queries",),
         "kv_evictions": ("evicted_tokens",),
+        "spec_accepted": ("spec_decode_num_accepted_tokens",),
+        "spec_drafts": ("spec_decode_num_draft_tokens",),
+        "spec_rounds": ("spec_decode_num_drafts",),
+    }
+    _ADDITIVE_GAUGE_SUFFIXES = {
+        "num_requests_running",
+        "num_requests_waiting",
+        "num_running_reqs",
+        "num_queue_reqs",
+        "num_used_tokens",
+    }
+    _MAX_GAUGE_SUFFIXES = {
+        "kv_cache_usage_perc",
+        "gpu_cache_usage_perc",
+        "cpu_cache_usage_perc",
+        "token_usage",
     }
     _LABEL_PATTERN = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"((?:\\.|[^"\\])*)"')
 
@@ -78,6 +94,9 @@ class MetricStore:
         self.api_key: Optional[str] = None
         self.metrics: Dict[str, Dict[str, Any]] = {}
         self.cumulative_groups: Dict[tuple, Dict[str, Any]] = {}
+        self._latest_group_intervals: Dict[tuple, Dict[str, Any]] = {}
+        self._histogram_series_state: Dict[tuple, float] = {}
+        self._latest_histogram_intervals: Dict[str, float] = {}
         self.history: deque = deque(maxlen=history_size)
         self.last_scrape: Optional[datetime] = None
         self.last_simulated: Optional[datetime] = None
@@ -96,6 +115,9 @@ class MetricStore:
         self.metrics.clear()
         self.history.clear()
         self.cumulative_groups.clear()
+        self._latest_group_intervals.clear()
+        self._histogram_series_state.clear()
+        self._latest_histogram_intervals.clear()
         self.last_scrape = None
         self.last_simulated = None
         self._warned = False
@@ -180,6 +202,7 @@ class MetricStore:
         now = datetime.now()
         self.metrics = parsed
         self._update_cumulative_groups(samples, now)
+        self._update_histogram_intervals(samples)
         self.last_scrape = now
         self.last_simulated = None
         self._warned = False
@@ -195,6 +218,7 @@ class MetricStore:
         types: Dict[str, str] = {}
         metrics: Dict[str, Dict[str, Any]] = {}
         buckets: Dict[str, Dict[float, float]] = {}
+        metric_series: Dict[str, list] = {}
         samples = []
         for line in text.splitlines():
             line = line.strip()
@@ -220,30 +244,37 @@ class MetricStore:
                 if le is not None:
                     histogram_buckets = buckets.setdefault(base, {})
                     histogram_buckets[le] = histogram_buckets.get(le, 0.0) + value
+                    parsed_labels = MetricStore._parse_labels(labels)
+                    parsed_labels.pop("le", None)
+                    label = "+Inf" if le == float("inf") else str(le)
+                    samples.append({
+                        "key": f"{base}_bucket_le_{label}",
+                        "value": value,
+                        "labels": parsed_labels,
+                        "histogram_component": True,
+                    })
                 continue
             if name.endswith("_sum") or name.endswith("_count"):
                 key = f"{base}{'_sum' if name.endswith('_sum') else '_count'}"
-                sample_value = value
-                sample_labels = labels
-                if types.get(base) == "histogram":
-                    value += metrics.get(key, {}).get("value", 0.0)
-                    labels = ""
-                metrics[key] = {
-                    "value": value, "type": "counter", "labels": labels
-                }
+                metric_series.setdefault(key, []).append({"value": value, "labels": labels})
                 samples.append({
                     "key": key,
-                    "value": sample_value,
-                    "labels": MetricStore._parse_labels(sample_labels),
+                    "value": value,
+                    "labels": MetricStore._parse_labels(labels),
+                    "histogram_component": types.get(base) == "histogram",
                 })
                 continue
             key = base if name.endswith("_total") else name
-            metrics[key] = {"value": value, "type": types.get(base, "gauge"), "labels": labels}
+            metric_series.setdefault(key, []).append({"value": value, "labels": labels})
             samples.append({
                 "key": key,
                 "value": value,
                 "labels": MetricStore._parse_labels(labels),
             })
+        for key, series in metric_series.items():
+            base = MetricStore._base_name(key)
+            metric_type = "counter" if key.endswith(("_sum", "_count")) else types.get(base, "gauge")
+            metrics[key] = MetricStore._aggregate_metric_series(key, metric_type, series)
         for base, values in buckets.items():
             bucket_values = list(values.items())
             percentiles = MetricStore._percentiles(bucket_values)
@@ -257,6 +288,36 @@ class MetricStore:
         return metrics, samples
 
     @staticmethod
+    def _aggregate_metric_series(key: str, metric_type: str, series: list) -> Dict[str, Any]:
+        """Keep every labeled series and expose an explicit flat aggregate.
+
+        Counters and count-like gauges are additive. Capacity ratios use the
+        busiest engine/rank for operational safety. Other multi-series gauges
+        use a documented arithmetic mean instead of silently keeping whichever
+        Prometheus line happened to be parsed last.
+        """
+        values = [item["value"] for item in series]
+        suffix = key.split(":", 1)[-1]
+        if metric_type == "counter" or suffix in MetricStore._ADDITIVE_GAUGE_SUFFIXES:
+            value, aggregation = sum(values), "sum"
+        elif suffix in MetricStore._MAX_GAUGE_SUFFIXES:
+            value, aggregation = max(values), "max"
+        elif len(values) == 1:
+            value, aggregation = values[0], "identity"
+        else:
+            value, aggregation = sum(values) / len(values), "mean"
+        output: Dict[str, Any] = {
+            "value": value,
+            "type": metric_type,
+            "labels": series[0]["labels"] if len(series) == 1 else "",
+            "aggregation": aggregation,
+            "series_count": len(series),
+        }
+        if len(series) > 1:
+            output["series"] = series
+        return output
+
+    @staticmethod
     def _parse_labels(labels: str) -> Dict[str, str]:
         parsed = {}
         for match in MetricStore._LABEL_PATTERN.finditer(labels):
@@ -267,12 +328,13 @@ class MetricStore:
     def _update_cumulative_groups(self, samples: list, now: Optional[datetime] = None) -> None:
         """Aggregate counters by runtime, engine type, and model.
 
-        Rank-, source-, and finish-reason label dimensions are intentionally
-        summed inside a group. Counter resets add the new counter value to the
-        retained total instead of making the displayed cumulative value drop.
+        Every full Prometheus label series tracks its own raw counter and reset
+        state. Only the resulting totals and interval deltas are aggregated by
+        model and engine, so one restarted rank cannot inflate the other ranks.
         """
         observed_at = now or datetime.now()
         grouped: Dict[tuple, Dict[str, Any]] = {}
+        self._latest_group_intervals = {}
         candidate_keys = {
             f"{runtime}:{suffix}"
             for runtime in ("vllm", "sglang")
@@ -301,7 +363,9 @@ class MetricStore:
                 gauge["count"] += 1
             else:
                 counters = group_values["counters"]
-                counters[key] = counters.get(key, 0.0) + value
+                series_key = tuple(sorted(labels.items()))
+                raw_series = counters.setdefault(key, {})
+                raw_series[series_key] = raw_series.get(series_key, 0.0) + value
 
         for (runtime, engine_type, model_name), observed in grouped.items():
             group_key = (runtime, engine_type, model_name)
@@ -316,6 +380,7 @@ class MetricStore:
                     "counters": {},
                 }
                 self.cumulative_groups[group_key] = group
+            elapsed = (observed_at - previous_seen).total_seconds() if previous_seen else None
             group["last_seen"] = observed_at
             counters = group["counters"]
             deltas = {}
@@ -325,33 +390,76 @@ class MetricStore:
                 source = next((candidate for candidate in candidates if candidate in raw_metrics), None)
                 if source is None:
                     continue
-                raw_value = raw_metrics[source]
+                raw_series = raw_metrics[source]
                 state = counters.get(field)
                 if state is None:
-                    counters[field] = {"source": source, "raw": raw_value, "total": raw_value}
-                    deltas[field] = raw_value
+                    counters[field] = {
+                        "source": source,
+                        "series": dict(raw_series),
+                        "total": sum(raw_series.values()),
+                    }
                     continue
                 if state["source"] != source:
-                    state.update({"source": source, "raw": raw_value})
+                    state.update({"source": source, "series": dict(raw_series)})
                     continue
-                increment = raw_value - state["raw"] if raw_value >= state["raw"] else raw_value
-                state["raw"] = raw_value
-                state["total"] += increment
-                deltas[field] = increment
+                interval_delta = 0.0
+                has_baseline = False
+                for series_key, raw_value in raw_series.items():
+                    previous_raw = state["series"].get(series_key)
+                    if previous_raw is None:
+                        state["series"][series_key] = raw_value
+                        state["total"] += raw_value
+                        continue
+                    increment = raw_value - previous_raw if raw_value >= previous_raw else raw_value
+                    state["series"][series_key] = raw_value
+                    state["total"] += increment
+                    interval_delta += increment
+                    has_baseline = True
+                if has_baseline:
+                    deltas[field] = interval_delta
 
-            hit_rate_key = f"{runtime}:{'cache_hit_rate' if runtime == 'sglang' else 'prefix_cache_hit_rate'}"
-            hit_rate_gauge = observed["gauges"].get(hit_rate_key)
-            if hit_rate_gauge and hit_rate_gauge["count"]:
-                group["cache_hit_rate"] = hit_rate_gauge["sum"] / hit_rate_gauge["count"]
-            elif deltas.get("kv_queries", 0) > 0:
-                group["cache_hit_rate"] = deltas.get("kv_hits", 0) / deltas["kv_queries"]
+            group["cache_hit_rate"] = None
+            denominator_field = "kv_queries" if runtime == "vllm" else "input_tokens"
+            denominator = deltas.get(denominator_field)
+            if denominator is not None and denominator > 0 and "kv_hits" in deltas:
+                group["cache_hit_rate"] = deltas["kv_hits"] / denominator
+            elif runtime == "vllm":
+                hit_rate_gauge = observed["gauges"].get("vllm:prefix_cache_hit_rate")
+                if hit_rate_gauge and hit_rate_gauge["count"]:
+                    group["cache_hit_rate"] = hit_rate_gauge["sum"] / hit_rate_gauge["count"]
 
-            if previous_seen and "kv_evictions" in deltas:
+            group["kv_evictions_per_sample"] = None
+            if "kv_evictions" in deltas:
                 group["kv_evictions_per_sample"] = deltas["kv_evictions"]
             if runtime == "sglang":
                 group["kv_eviction_unit"] = "tokens"
+            if elapsed is not None and elapsed > 0:
+                self._latest_group_intervals[group_key] = {"elapsed": elapsed, "deltas": deltas}
 
         self._cleanup_cumulative_groups(observed_at)
+
+    def _update_histogram_intervals(self, samples: list) -> None:
+        """Calculate histogram component deltas per complete label series."""
+        observed: Dict[str, Dict[tuple, float]] = {}
+        for sample in samples:
+            if not sample.get("histogram_component"):
+                continue
+            key = sample["key"]
+            series_key = tuple(sorted((sample.get("labels") or {}).items()))
+            series = observed.setdefault(key, {})
+            series[series_key] = series.get(series_key, 0.0) + sample["value"]
+
+        intervals: Dict[str, float] = {}
+        for key, series in observed.items():
+            for series_key, raw_value in series.items():
+                state_key = (key, series_key)
+                previous_raw = self._histogram_series_state.get(state_key)
+                self._histogram_series_state[state_key] = raw_value
+                if previous_raw is None:
+                    continue
+                increment = raw_value - previous_raw if raw_value >= previous_raw else raw_value
+                intervals[key] = intervals.get(key, 0.0) + increment
+        self._latest_histogram_intervals = intervals
 
     def _cleanup_cumulative_groups(self, now: Optional[datetime] = None) -> None:
         observed_at = now or datetime.now()
@@ -378,9 +486,6 @@ class MetricStore:
                     for field, state in group["counters"].items()
                     if field in {"requests", "input_tokens", "output_tokens"}
                 },
-                "cache_hit_rate": group.get("cache_hit_rate"),
-                "kv_evictions_per_sample": group.get("kv_evictions_per_sample"),
-                "kv_eviction_unit": group.get("kv_eviction_unit"),
             })
         return sorted(output, key=lambda item: (item["model_name"], item["runtime"], item["engine_type"]))
 
@@ -497,7 +602,10 @@ class MetricStore:
             return {}
         previous = self.history[-1]
         try:
-            elapsed = (datetime.fromisoformat(snapshot["timestamp"]) - datetime.fromisoformat(previous["timestamp"])).total_seconds()
+            elapsed = (
+                datetime.fromisoformat(snapshot["timestamp"])
+                - datetime.fromisoformat(previous["timestamp"])
+            ).total_seconds()
         except (KeyError, ValueError):
             return {}
         if elapsed <= 0:
@@ -510,24 +618,58 @@ class MetricStore:
             change = current - before
             return change if change >= 0 else None
 
+        def grouped_delta(runtime: str, field: str) -> Optional[float]:
+            values = [
+                interval["deltas"][field]
+                for group_key, interval in self._latest_group_intervals.items()
+                if group_key[0] == runtime and field in interval["deltas"]
+            ]
+            return sum(values) if values else None
+
+        def grouped_rate(runtime: str, field: str) -> Optional[float]:
+            rates = [
+                interval["deltas"][field] / interval["elapsed"]
+                for group_key, interval in self._latest_group_intervals.items()
+                if group_key[0] == runtime
+                and field in interval["deltas"]
+                and interval["elapsed"] > 0
+            ]
+            return sum(rates) if rates else None
+
+        use_grouped_deltas = bool(self._latest_group_intervals)
+
         output: Dict[str, float] = {}
 
         # Current vLLM releases export prefix-cache hits and queries as token
-        # counters rather than a hit-rate gauge. Prefer the current collection
-        # interval, retain the last meaningful value during idle intervals, and
-        # use the process-lifetime ratio for the first usable sample.
+        # counters rather than a hit-rate gauge. Only emit a value for an
+        # interval that actually processed queried tokens; idle intervals are
+        # gaps instead of stale horizontal data.
         if "vllm:prefix_cache_hit_rate" not in snapshot:
-            cache_hits = delta("vllm:prefix_cache_hits")
-            cache_queries = delta("vllm:prefix_cache_queries")
+            cache_hits = (
+                grouped_delta("vllm", "kv_hits")
+                if use_grouped_deltas
+                else delta("vllm:prefix_cache_hits")
+            )
+            cache_queries = (
+                grouped_delta("vllm", "kv_queries")
+                if use_grouped_deltas
+                else delta("vllm:prefix_cache_queries")
+            )
             if cache_queries is not None and cache_queries > 0 and cache_hits is not None:
                 output["observability:prefix_cache_hit_rate"] = cache_hits / cache_queries
-            elif isinstance(previous.get("observability:prefix_cache_hit_rate"), (int, float)):
-                output["observability:prefix_cache_hit_rate"] = previous["observability:prefix_cache_hit_rate"]
-            else:
-                total_hits = snapshot.get("vllm:prefix_cache_hits")
-                total_queries = snapshot.get("vllm:prefix_cache_queries")
-                if isinstance(total_hits, (int, float)) and isinstance(total_queries, (int, float)) and total_queries > 0:
-                    output["observability:prefix_cache_hit_rate"] = total_hits / total_queries
+
+        sglang_hits = (
+            grouped_delta("sglang", "kv_hits")
+            if use_grouped_deltas
+            else delta("sglang:cached_tokens")
+        )
+        sglang_prompt = (
+            grouped_delta("sglang", "input_tokens")
+            if use_grouped_deltas
+            else delta("sglang:prompt_tokens")
+        )
+        if sglang_prompt is not None and sglang_prompt > 0 and sglang_hits is not None:
+            output["observability:sglang_cache_hit_rate"] = sglang_hits / sglang_prompt
 
         # Prometheus histogram buckets, sums, and counts are counters. Use
         # their deltas between adjacent scrapes so values describe this sample
@@ -535,13 +677,15 @@ class MetricStore:
         buckets_by_histogram: Dict[str, list] = {}
         invalid_histograms = set()
         marker = "_bucket_le_"
-        for key in snapshot:
+        histogram_components = self._latest_histogram_intervals
+        component_keys = histogram_components.keys() if histogram_components else snapshot.keys()
+        for key in component_keys:
             if marker not in key:
                 continue
             base, raw_limit = key.rsplit(marker, 1)
             if self.metrics.get(base, {}).get("type") != "histogram":
                 continue
-            count = delta(key)
+            count = histogram_components.get(key) if histogram_components else delta(key)
             if count is None:
                 invalid_histograms.add(base)
                 continue
@@ -558,37 +702,80 @@ class MetricStore:
             bucket_values.sort(key=lambda item: item[0])
             if not bucket_values or bucket_values[-1][0] != float("inf"):
                 continue
-            total_requests = delta(f"{base}_count")
-            if total_requests is not None and abs(total_requests - bucket_values[-1][1]) > 1e-9:
+            total_requests = (
+                histogram_components.get(f"{base}_count")
+                if histogram_components
+                else delta(f"{base}_count")
+            )
+            if (
+                total_requests is not None
+                and abs(total_requests - bucket_values[-1][1]) > 1e-9
+            ):
                 continue
             for bucket_key, _, count in buckets:
                 output[f"{bucket_key}::interval"] = count
             for percentile, value in self._percentiles(bucket_values).items():
                 output[f"{base}::{percentile}"] = value
-            total_duration = delta(f"{base}_sum")
+            total_duration = (
+                histogram_components.get(f"{base}_sum")
+                if histogram_components
+                else delta(f"{base}_sum")
+            )
             if total_duration is not None and total_requests is not None and total_requests > 0:
                 output[f"{base}::avg"] = total_duration / total_requests
         for prefix in ("vllm:", "sglang:"):
-            prompt = delta(f"{prefix}prompt_tokens")
-            generated = delta(f"{prefix}generation_tokens")
-            if prompt is not None:
-                output["observability:prompt_token_rate"] = prompt / elapsed
-            if generated is not None:
-                output["observability:generation_token_rate"] = generated / elapsed
-            if prompt is not None and generated is not None:
-                output["observability:total_token_rate"] = (prompt + generated) / elapsed
+            runtime = prefix[:-1]
+            prompt_rate = grouped_rate(runtime, "input_tokens") if use_grouped_deltas else None
+            generated_rate = grouped_rate(runtime, "output_tokens") if use_grouped_deltas else None
+            if not use_grouped_deltas:
+                prompt = delta(f"{prefix}prompt_tokens")
+                generated = delta(f"{prefix}generation_tokens")
+                prompt_rate = prompt / elapsed if prompt is not None else None
+                generated_rate = generated / elapsed if generated is not None else None
+            if prompt_rate is not None:
+                output["observability:prompt_token_rate"] = prompt_rate
+            if generated_rate is not None:
+                output["observability:generation_token_rate"] = generated_rate
+            if prompt_rate is not None and generated_rate is not None:
+                output["observability:total_token_rate"] = prompt_rate + generated_rate
 
-        sglang_evictions = delta("sglang:evicted_tokens")
+        sglang_evictions = (
+            grouped_delta("sglang", "kv_evictions")
+            if use_grouped_deltas
+            else delta("sglang:evicted_tokens")
+        )
         if sglang_evictions is not None:
             output["observability:kv_evictions_per_sample"] = sglang_evictions
 
-        accepted = delta("vllm:spec_decode_num_accepted_tokens")
-        drafts = delta("vllm:spec_decode_num_draft_tokens")
-        rounds = delta("vllm:spec_decode_num_drafts")
-        if accepted is not None:
-            output["observability:spec_accepted_token_rate"] = accepted / elapsed
-        if drafts is not None:
-            output["observability:spec_draft_token_rate"] = drafts / elapsed
+        accepted = (
+            grouped_delta("vllm", "spec_accepted")
+            if use_grouped_deltas
+            else delta("vllm:spec_decode_num_accepted_tokens")
+        )
+        drafts = (
+            grouped_delta("vllm", "spec_drafts")
+            if use_grouped_deltas
+            else delta("vllm:spec_decode_num_draft_tokens")
+        )
+        rounds = (
+            grouped_delta("vllm", "spec_rounds")
+            if use_grouped_deltas
+            else delta("vllm:spec_decode_num_drafts")
+        )
+        accepted_rate = (
+            grouped_rate("vllm", "spec_accepted")
+            if use_grouped_deltas
+            else (accepted / elapsed if accepted is not None else None)
+        )
+        draft_rate = (
+            grouped_rate("vllm", "spec_drafts")
+            if use_grouped_deltas
+            else (drafts / elapsed if drafts is not None else None)
+        )
+        if accepted_rate is not None:
+            output["observability:spec_accepted_token_rate"] = accepted_rate
+        if draft_rate is not None:
+            output["observability:spec_draft_token_rate"] = draft_rate
         if accepted is not None and drafts:
             output["observability:spec_acceptance_rate"] = accepted / drafts
         if accepted is not None and rounds:
@@ -709,6 +896,7 @@ async def simulate_metrics(request: SimulateMetricsRequest) -> Dict[str, str]:
                      for key, value in values.items()}
     now = datetime.now()
     store.cumulative_groups.clear()
+    store._latest_group_intervals.clear()
     cumulative_samples = [
         {"key": key, "value": entry["value"], "labels": {"model_name": "demo", "engine_type": "demo"}}
         for key, entry in store.metrics.items()
@@ -734,6 +922,9 @@ async def reset_simulation() -> Dict[str, str]:
     store.metrics.clear()
     store.history.clear()
     store.cumulative_groups.clear()
+    store._latest_group_intervals.clear()
+    store._histogram_series_state.clear()
+    store._latest_histogram_intervals.clear()
     store.last_scrape = None
     store.last_simulated = None
     return {"status": "ok"}

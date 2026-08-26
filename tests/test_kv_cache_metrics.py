@@ -35,7 +35,7 @@ def test_vllm_prefix_cache_hit_rate_uses_counter_deltas() -> None:
     assert derived["observability:prefix_cache_hit_rate"] == pytest.approx(0.75)
 
 
-def test_vllm_prefix_cache_hit_rate_is_retained_while_idle() -> None:
+def test_vllm_prefix_cache_hit_rate_is_a_gap_while_idle() -> None:
     store = MetricStore()
     now = datetime.now()
     store.history.append(
@@ -59,7 +59,23 @@ def test_vllm_prefix_cache_hit_rate_is_retained_while_idle() -> None:
         )
     )
 
-    assert derived["observability:prefix_cache_hit_rate"] == pytest.approx(0.5)
+    assert "observability:prefix_cache_hit_rate" not in derived
+
+
+def test_flat_metrics_aggregate_labeled_counter_series_instead_of_last_value() -> None:
+    parsed = MetricStore.parse_prometheus(
+        """
+# TYPE vllm:prompt_tokens_total counter
+vllm:prompt_tokens_total{model_name="model-a",engine="0"} 100
+vllm:prompt_tokens_total{model_name="model-b",engine="1"} 300
+"""
+    )
+
+    entry = parsed["vllm:prompt_tokens"]
+    assert entry["value"] == 400
+    assert entry["aggregation"] == "sum"
+    assert entry["series_count"] == 2
+    assert len(entry["series"]) == 2
 
 
 def test_kv_eviction_metrics_are_parsed_with_runtime_names() -> None:
@@ -120,9 +136,8 @@ sglang:evicted_tokens_total{model_name="model-a",engine_type="unified",tp_rank="
         "output_tokens": 70,
     }
     assert groups[1]["values"] == {"requests": 7}
-    assert groups[0]["cache_hit_rate"] == pytest.approx(0.6)
-    assert groups[0]["kv_evictions_per_sample"] is None
-    assert groups[0]["kv_eviction_unit"] == "tokens"
+    assert "cache_hit_rate" not in groups[0]
+    assert "kv_evictions_per_sample" not in groups[0]
 
 
 def test_cumulative_counter_reset_continues_and_stale_group_expires() -> None:
@@ -145,6 +160,30 @@ def test_cumulative_counter_reset_continues_and_stale_group_expires() -> None:
     assert store.get_cumulative_groups(now + timedelta(seconds=8)) == []
 
 
+def test_partial_rank_reset_is_handled_before_group_aggregation() -> None:
+    store = MetricStore()
+    now = datetime.now()
+
+    def samples(rank_0: int, rank_1: int) -> list:
+        return [
+            {
+                "key": "vllm:request_success",
+                "value": rank_0,
+                "labels": {"model_name": "model-a", "engine_type": "v1", "rank": "0"},
+            },
+            {
+                "key": "vllm:request_success",
+                "value": rank_1,
+                "labels": {"model_name": "model-a", "engine_type": "v1", "rank": "1"},
+            },
+        ]
+
+    store._update_cumulative_groups(samples(100, 100), now)
+    store._update_cumulative_groups(samples(0, 110), now + timedelta(seconds=1))
+
+    assert store.get_cumulative_groups(now + timedelta(seconds=1))[0]["values"]["requests"] == 210
+
+
 def test_vllm_eviction_histogram_count_is_not_exposed_as_evictions() -> None:
     store = MetricStore()
     now = datetime.now()
@@ -162,7 +201,7 @@ vllm:kv_block_idle_before_evict_seconds_count{model_name="model-a",engine_type="
     assert groups == []
 
 
-def test_grouped_vllm_hit_rate_uses_counter_deltas_without_eviction_value() -> None:
+def test_grouped_vllm_hit_rate_uses_per_series_counter_deltas() -> None:
     store = MetricStore()
     now = datetime.now()
 
@@ -170,15 +209,14 @@ def test_grouped_vllm_hit_rate_uses_counter_deltas_without_eviction_value() -> N
         {"key": "vllm:prefix_cache_hits", "value": 100, "labels": {"model_name": "model-a"}},
         {"key": "vllm:prefix_cache_queries", "value": 200, "labels": {"model_name": "model-a"}},
     ], now)
+    store.history.append(_snapshot(now))
     store._update_cumulative_groups([
         {"key": "vllm:prefix_cache_hits", "value": 130, "labels": {"model_name": "model-a"}},
         {"key": "vllm:prefix_cache_queries", "value": 240, "labels": {"model_name": "model-a"}},
     ], now + timedelta(seconds=2))
 
-    group = store.get_cumulative_groups(now + timedelta(seconds=2))[0]
-    assert group["cache_hit_rate"] == pytest.approx(0.75)
-    assert group["kv_evictions_per_sample"] is None
-    assert group["kv_eviction_unit"] is None
+    derived = store._derive_rates(_snapshot(now + timedelta(seconds=2)))
+    assert derived["observability:prefix_cache_hit_rate"] == pytest.approx(0.75)
 
 
 def test_grouped_sglang_evictions_use_counter_delta_per_sample() -> None:
@@ -188,13 +226,39 @@ def test_grouped_sglang_evictions_use_counter_delta_per_sample() -> None:
     store._update_cumulative_groups([
         {"key": "sglang:evicted_tokens", "value": 10, "labels": {"model_name": "model-a"}},
     ], now)
+    store.history.append(_snapshot(now))
     store._update_cumulative_groups([
         {"key": "sglang:evicted_tokens", "value": 14, "labels": {"model_name": "model-a"}},
     ], now + timedelta(seconds=2))
 
-    group = store.get_cumulative_groups(now + timedelta(seconds=2))[0]
-    assert group["kv_evictions_per_sample"] == 4
-    assert group["kv_eviction_unit"] == "tokens"
+    derived = store._derive_rates(_snapshot(now + timedelta(seconds=2)))
+    assert derived["observability:kv_evictions_per_sample"] == 4
+
+
+def test_sglang_hit_rate_uses_token_counter_deltas_not_batch_gauge_average() -> None:
+    store = MetricStore()
+    now = datetime.now()
+
+    store._update_cumulative_groups([
+        {"key": "sglang:prompt_tokens", "value": 100, "labels": {"model_name": "model-a", "rank": "0"}},
+        {"key": "sglang:prompt_tokens", "value": 100, "labels": {"model_name": "model-a", "rank": "1"}},
+        {"key": "sglang:cached_tokens", "value": 20, "labels": {"model_name": "model-a", "source": "device"}},
+        {"key": "sglang:cached_tokens", "value": 30, "labels": {"model_name": "model-a", "source": "host"}},
+        {"key": "sglang:cache_hit_rate", "value": 0.9, "labels": {"model_name": "model-a", "rank": "0"}},
+        {"key": "sglang:cache_hit_rate", "value": 0.1, "labels": {"model_name": "model-a", "rank": "1"}},
+    ], now)
+    store.history.append(_snapshot(now))
+    store._update_cumulative_groups([
+        {"key": "sglang:prompt_tokens", "value": 150, "labels": {"model_name": "model-a", "rank": "0"}},
+        {"key": "sglang:prompt_tokens", "value": 150, "labels": {"model_name": "model-a", "rank": "1"}},
+        {"key": "sglang:cached_tokens", "value": 50, "labels": {"model_name": "model-a", "source": "device"}},
+        {"key": "sglang:cached_tokens", "value": 40, "labels": {"model_name": "model-a", "source": "host"}},
+        {"key": "sglang:cache_hit_rate", "value": 0.0, "labels": {"model_name": "model-a", "rank": "0"}},
+        {"key": "sglang:cache_hit_rate", "value": 0.0, "labels": {"model_name": "model-a", "rank": "1"}},
+    ], now + timedelta(seconds=2))
+
+    derived = store._derive_rates(_snapshot(now + timedelta(seconds=2)))
+    assert derived["observability:sglang_cache_hit_rate"] == pytest.approx(0.4)
 
 
 def test_history_uses_eviction_delta_for_each_sample() -> None:
@@ -210,3 +274,45 @@ def test_history_uses_eviction_delta_for_each_sample() -> None:
     )
 
     assert derived["observability:kv_evictions_per_sample"] == 4
+
+
+def test_histogram_interval_survives_one_rank_counter_reset() -> None:
+    store = MetricStore()
+    now = datetime.now()
+    first_metrics, first_samples = store._parse_prometheus_payload(
+        """
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="0",le="1"} 100
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="0",le="+Inf"} 100
+vllm:time_to_first_token_seconds_sum{model_name="model-a",rank="0"} 50
+vllm:time_to_first_token_seconds_count{model_name="model-a",rank="0"} 100
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="1",le="1"} 0
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="1",le="+Inf"} 100
+vllm:time_to_first_token_seconds_sum{model_name="model-a",rank="1"} 200
+vllm:time_to_first_token_seconds_count{model_name="model-a",rank="1"} 100
+"""
+    )
+    store.metrics = first_metrics
+    store._update_histogram_intervals(first_samples)
+    store._append_snapshot(now)
+
+    second_metrics, second_samples = store._parse_prometheus_payload(
+        """
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="0",le="1"} 0
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="0",le="+Inf"} 0
+vllm:time_to_first_token_seconds_sum{model_name="model-a",rank="0"} 0
+vllm:time_to_first_token_seconds_count{model_name="model-a",rank="0"} 0
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="1",le="1"} 10
+vllm:time_to_first_token_seconds_bucket{model_name="model-a",rank="1",le="+Inf"} 110
+vllm:time_to_first_token_seconds_sum{model_name="model-a",rank="1"} 205
+vllm:time_to_first_token_seconds_count{model_name="model-a",rank="1"} 110
+"""
+    )
+    store.metrics = second_metrics
+    store._update_histogram_intervals(second_samples)
+    store._append_snapshot(now + timedelta(seconds=1))
+
+    histogram = store.metrics["vllm:time_to_first_token_seconds"]
+    assert histogram["avg"] == pytest.approx(0.5)
+    assert histogram["p90"] == pytest.approx(0.9)

@@ -10,7 +10,7 @@ import {
     formatMetricValue,
     getThresholdStatus,
     groupByCategory,
-} from './metrics-registry.js';
+} from './metrics-registry.js?v=20260826-metric-accuracy';
 import { metricsPoller } from './metrics-poller.js';
 
 function displayModelName(modelName = '') {
@@ -572,7 +572,7 @@ const ObservabilityModule = {
             ['observability:generation_token_rate', 'Decode Throughput', 'number', 'tok/s'],
             ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
             ['num_running_reqs', 'Running Requests', 'integer'],
-            ['cache_hit_rate', 'Cache Hit Rate', 'percent'],
+            ['observability:sglang_cache_hit_rate', 'Cache Hit Rate', 'percent'],
             ['cached_tokens', 'KV Cache Hits', 'integer', 'tokens'],
             ['observability:kv_evictions_per_sample', 'KV Evictions / Sample', 'integer', 'tokens'],
             ['spec_num_steps', 'Speculative Steps', 'integer'],
@@ -597,8 +597,9 @@ const ObservabilityModule = {
             ['observability:generation_token_rate', 'Decode Throughput', 'number', 'tok/s'],
             ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
             ['num_requests_running', 'Running Requests', 'integer'],
-            ['observability:prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
-            ['prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
+            [metrics['vllm:prefix_cache_hit_rate']
+                ? 'prefix_cache_hit_rate'
+                : 'observability:prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
             ['prefix_cache_hits', 'KV Cache Hits', 'integer', 'tokens'],
             ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time Avg', 'duration_ms', null, 'avg'],
             ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time P90', 'duration_ms', null, 'p90'],
@@ -620,7 +621,11 @@ const ObservabilityModule = {
         const descriptors = specs.map(([name, label, format, unit, percentile]) => {
             const key = name.includes(':') ? name : `${prefix}${name}`;
             return { key, label, format, unit, percentile, historyKey: percentile ? `${key}::${percentile}` : key };
-        }).filter(({ key }) => metrics[key]);
+        }).filter(({ key }) => metrics[key] || [
+            'observability:prefix_cache_hit_rate',
+            'observability:sglang_cache_hit_rate',
+            'observability:kv_evictions_per_sample',
+        ].includes(key));
         if (isSglang) {
             const acceptedLengthKey = [
                 'sglang:spec_accept_length', 'sglang:spec_accept_len', 'sglang:accept_length',
@@ -692,11 +697,6 @@ const ObservabilityModule = {
                 input_tokens: valueFor([`${prefix}prompt_tokens`]),
                 output_tokens: valueFor([`${prefix}generation_tokens`]),
             },
-            cache_hit_rate: valueFor(isSglang
-                ? ['sglang:cache_hit_rate']
-                : ['observability:prefix_cache_hit_rate', 'vllm:prefix_cache_hit_rate']),
-            kv_evictions_per_sample: null,
-            kv_eviction_unit: isSglang ? 'tokens' : null,
         };
     },
 
@@ -741,33 +741,11 @@ const ObservabilityModule = {
             const expires = Number.isFinite(group.expires_in_seconds)
                 ? `${Math.ceil(group.expires_in_seconds)}s TTL`
                 : `${this._cumulativeTtlSeconds}s TTL`;
-            const operationalSpecs = [
-                {
-                    label: 'Cache Hit Rate',
-                    format: 'percent',
-                    value: group.cache_hit_rate,
-                    note: 'recent hit / query ratio',
-                    color: '#f472b6',
-                },
-            ];
-            if (group.runtime === 'sglang') {
-                operationalSpecs.push({
-                    label: 'KV Evictions / Sample',
-                    format: 'integer',
-                    unit: group.kv_eviction_unit,
-                    value: group.kv_evictions_per_sample,
-                    note: 'tokens evicted in this sample',
-                    color: '#fb923c',
-                });
-            }
             const cards = cardSpecs.map((spec) => ({
                 ...spec,
                 value: group.values?.[spec.field] ?? null,
                 note: group.values?.[spec.field] == null ? 'not exposed by this runtime' : spec.note,
-            })).concat(operationalSpecs.map((spec) => ({
-                ...spec,
-                note: spec.value == null ? 'waiting for the next counter sample' : spec.note,
-            })));
+            }));
             return `<section class="obs-live-stat-group">
                 <div class="obs-live-stat-group-heading">
                     <div><strong>${this._escapeHtml(group.model_name || 'unknown')}</strong><span>${this._escapeHtml(engine)}</span></div>
@@ -976,7 +954,7 @@ const ObservabilityModule = {
                     scales: { x: { time: true } },
                     tooltip: {
                         title: chart.title,
-                        modelName: this._currentModelName || this._modelNameFromLabels(entry?.labels),
+                        modelName: this._modelNameFromLabels(entry?.labels),
                         formatter: (value, seriesIndex) => {
                             const descriptor = chart.descriptors[seriesIndex] || chart.descriptors[0];
                             return formatMetricValue(value, descriptor.format, descriptor.unit);

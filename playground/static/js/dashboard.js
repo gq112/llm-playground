@@ -1,4 +1,4 @@
-import ObservabilityModule from './modules/observability.js?v=20260826-cumulative-groups';
+import ObservabilityModule from './modules/observability.js?v=20260826-metric-accuracy';
 
 const targetForm = document.getElementById('target-form');
 const targetUrl = document.getElementById('target-url');

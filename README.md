@@ -40,10 +40,11 @@ histograms, alert thresholds, exports, and a local demo mode.
 
 KV cache observability includes hit counters and hit rate for both runtimes.
 For vLLM, the dashboard derives the interval hit rate from
-`prefix_cache_hits / prefix_cache_queries`. The grouped summary shows cache hit
-rate rather than cumulative hit tokens. SGLang eviction pressure is shown as
-the number of evicted tokens added in each scrape interval. vLLM does not expose
-a true eviction counter, so the grouped summary does not show an eviction card
-for vLLM. Its sampled block-eviction idle time, lifetime, and reuse gaps appear when started with
+`prefix_cache_hits / prefix_cache_queries`. For SGLang, it derives a token-weighted
+interval rate from `cached_tokens / prompt_tokens` instead of averaging the
+last-batch `cache_hit_rate` gauge. Cache hit rate and SGLang eviction deltas are
+shown as time-series charts rather than cumulative summary cards. vLLM does not
+expose a true eviction counter, so no vLLM eviction series is synthesized. Its
+sampled block-eviction idle time, lifetime, and reuse gaps appear when started with
 `--kv-cache-metrics-sample` set to a non-zero sampling rate; request
 preemptions remain a separate metric because they are not cache evictions.

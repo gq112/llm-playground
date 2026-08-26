@@ -55,6 +55,12 @@ export const METRIC_REGISTRY = {
         format: 'percent',
         obsTab: 'overview',
     },
+    'observability:sglang_cache_hit_rate': {
+        category: 'kv-cache',
+        label: 'KV Cache Hit Rate',
+        format: 'percent',
+        obsTab: 'overview',
+    },
     'observability:kv_evictions_per_sample': {
         category: 'kv-cache',
         label: 'KV Evictions / Sample',
@@ -169,7 +175,7 @@ export const METRIC_REGISTRY = {
         category: 'latency',
         label: 'Time to First Token',
         format: 'duration_ms',
-        thresholds: { warning: 500, danger: 2000 },
+        thresholds: { warning: 0.5, danger: 2 },
         sidebar: true,
         obsTab: 'latency',
         histogramDisplay: ['avg', 'p90', 'p99'],
