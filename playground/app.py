@@ -44,6 +44,7 @@ class SimulateMetricsRequest(BaseModel):
     num_requests_waiting: Optional[float] = None
     prefix_cache_hits: Optional[float] = None
     prefix_cache_queries: Optional[float] = None
+    kv_evictions: Optional[float] = None
     gpu_cache_usage_perc: Optional[float] = None
     cpu_cache_usage_perc: Optional[float] = None
     spec_decode_accepted: Optional[float] = None
@@ -323,7 +324,7 @@ class MetricStore:
             })
 
     def _derive_rates(self, snapshot: Dict[str, Any]) -> Dict[str, float]:
-        """Derive short-interval token and vLLM spec-decode rates from counters."""
+        """Derive short-interval cache, token, and spec-decode metrics."""
         if not self.history:
             return {}
         previous = self.history[-1]
@@ -342,6 +343,23 @@ class MetricStore:
             return change if change >= 0 else None
 
         output: Dict[str, float] = {}
+
+        # Current vLLM releases export prefix-cache hits and queries as token
+        # counters rather than a hit-rate gauge. Prefer the current collection
+        # interval, retain the last meaningful value during idle intervals, and
+        # use the process-lifetime ratio for the first usable sample.
+        if "vllm:prefix_cache_hit_rate" not in snapshot:
+            cache_hits = delta("vllm:prefix_cache_hits")
+            cache_queries = delta("vllm:prefix_cache_queries")
+            if cache_queries is not None and cache_queries > 0 and cache_hits is not None:
+                output["observability:prefix_cache_hit_rate"] = cache_hits / cache_queries
+            elif isinstance(previous.get("observability:prefix_cache_hit_rate"), (int, float)):
+                output["observability:prefix_cache_hit_rate"] = previous["observability:prefix_cache_hit_rate"]
+            else:
+                total_hits = snapshot.get("vllm:prefix_cache_hits")
+                total_queries = snapshot.get("vllm:prefix_cache_queries")
+                if isinstance(total_hits, (int, float)) and isinstance(total_queries, (int, float)) and total_queries > 0:
+                    output["observability:prefix_cache_hit_rate"] = total_hits / total_queries
 
         # Prometheus histogram buckets, sums, and counts are counters. Use
         # their deltas between adjacent scrapes so values describe this sample
@@ -498,6 +516,7 @@ async def simulate_metrics(request: SimulateMetricsRequest) -> Dict[str, str]:
         "num_preemptions": "vllm:num_preemptions", "num_requests_running": "vllm:num_requests_running",
         "num_requests_waiting": "vllm:num_requests_waiting", "prefix_cache_hits": "vllm:prefix_cache_hits",
         "prefix_cache_queries": "vllm:prefix_cache_queries", "gpu_cache_usage_perc": "vllm:gpu_cache_usage_perc",
+        "kv_evictions": "vllm:kv_block_idle_before_evict_seconds_count",
         "cpu_cache_usage_perc": "vllm:cpu_cache_usage_perc", "spec_decode_accepted": "vllm:spec_decode_num_accepted_tokens",
         "spec_decode_draft": "vllm:spec_decode_num_draft_tokens",
     }

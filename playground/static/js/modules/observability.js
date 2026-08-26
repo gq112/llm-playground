@@ -568,6 +568,8 @@ const ObservabilityModule = {
             ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
             ['num_running_reqs', 'Running Requests', 'integer'],
             ['cache_hit_rate', 'Cache Hit Rate', 'percent'],
+            ['cached_tokens', 'KV Cache Hits', 'integer', 'tokens'],
+            ['evicted_tokens', 'KV Cache Evictions', 'integer', 'tokens'],
             ['spec_num_steps', 'Speculative Steps', 'integer'],
             ['spec_num_draft_tokens', 'Draft Tokens / Step', 'integer'],
             ['time_to_first_token_seconds', 'TTFT Avg', 'duration_ms', null, 'avg'],
@@ -590,7 +592,12 @@ const ObservabilityModule = {
             ['observability:generation_token_rate', 'Decode Throughput', 'number', 'tok/s'],
             ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
             ['num_requests_running', 'Running Requests', 'integer'],
-            ['prefix_cache_hit_rate', 'Prefix Cache Hit Rate', 'percent'],
+            ['observability:prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
+            ['prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
+            ['prefix_cache_hits', 'KV Cache Hits', 'integer', 'tokens'],
+            ['kv_block_idle_before_evict_seconds_count', 'Sampled KV Evictions', 'integer', 'blocks'],
+            ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time Avg', 'duration_ms', null, 'avg'],
+            ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time P90', 'duration_ms', null, 'p90'],
             ['observability:spec_acceptance_rate', 'Draft Acceptance Rate', 'percent'],
             ['observability:spec_mean_accept_length', 'Mean Accepted Length', 'number', 'tok/draft'],
             ['observability:spec_draft_token_rate', 'Draft Token Rate', 'number', 'tok/s'],
@@ -667,6 +674,7 @@ const ObservabilityModule = {
         const container = document.getElementById('obs-live-stats');
         if (!container) return;
         const prefix = this._latestBackend === 'sglang' ? 'sglang:' : 'vllm:';
+        const isSglang = this._latestBackend === 'sglang';
         const cards = [
             {
                 label: 'Cumulative Requests',
@@ -689,11 +697,32 @@ const ObservabilityModule = {
                 note: 'service process total',
                 color: '#34d399',
             },
+            {
+                label: 'Cumulative KV Hits',
+                keys: isSglang ? ['sglang:cached_tokens'] : ['vllm:prefix_cache_hits'],
+                format: 'integer',
+                unit: 'tokens',
+                note: 'cached tokens served',
+                color: '#f472b6',
+            },
+            {
+                label: 'Cumulative KV Evictions',
+                keys: isSglang
+                    ? ['sglang:evicted_tokens']
+                    : ['vllm:kv_block_idle_before_evict_seconds_count'],
+                format: 'integer',
+                unit: isSglang ? 'tokens' : 'blocks',
+                note: isSglang ? 'evicted tokens' : 'sampled eviction events',
+                unavailableNote: isSglang
+                    ? 'not exposed by this runtime'
+                    : 'enable --kv-cache-metrics-sample',
+                color: '#fb923c',
+            },
         ].map((card) => {
             const key = card.keys.find((candidate) => metrics[candidate]?.value != null);
             return key
                 ? { ...card, value: metrics[key].value }
-                : { ...card, value: null, note: 'not exposed by this runtime' };
+                : { ...card, value: null, note: card.unavailableNote || 'not exposed by this runtime' };
         });
 
         container.style.display = '';
@@ -709,6 +738,8 @@ const ObservabilityModule = {
             'KV Usage', 'KV Cache Usage', 'Queued Requests', 'Waiting Requests',
             'Generation Throughput', 'Input Token Rate', 'Decode Throughput',
             'Total Token Rate', 'Running Requests', 'Radix Cache Hit Rate',
+            'KV Cache Hit Rate', 'KV Cache Hits', 'KV Cache Evictions', 'Sampled KV Evictions',
+            'Eviction Idle Time Avg', 'Eviction Idle Time P90',
             'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT Avg', 'TTFT P90', 'TTFT P99',
             'TPOT Avg', 'TPOT P90', 'TPOT P99', 'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
             'Stage Latency Avg', 'Stage Latency P90', 'Stage Latency P99',
@@ -1616,6 +1647,7 @@ const ObservabilityModule = {
                     num_requests_waiting: 1,
                     prefix_cache_hits: 1250,
                     prefix_cache_queries: 2000,
+                    kv_evictions: 86,
                     gpu_cache_usage_perc: 38.7,
                     spec_decode_accepted: 180,
                     spec_decode_draft: 320,

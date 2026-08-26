@@ -33,3 +33,11 @@ For unattended deployment, set `VLLM_METRICS_URL` and optionally
 
 The dashboard includes metric discovery, time-series history, latency
 histograms, alert thresholds, exports, and a local demo mode.
+
+KV cache observability includes hit counters and hit rate for both runtimes.
+For vLLM, the dashboard derives the interval hit rate from
+`prefix_cache_hits / prefix_cache_queries`. SGLang's `cached_tokens_total` and
+`evicted_tokens_total` are shown directly. vLLM block-eviction counts, idle
+time, lifetime, and reuse gaps appear when the server is started with
+`--kv-cache-metrics-sample` set to a non-zero sampling rate; request
+preemptions remain a separate metric because they are not cache evictions.
