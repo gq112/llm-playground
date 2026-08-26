@@ -3,8 +3,10 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import random
+import re
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -54,11 +56,27 @@ class SimulateMetricsRequest(BaseModel):
 class MetricStore:
     """Poll a vLLM or SGLang Prometheus endpoint and retain local history."""
 
-    def __init__(self, interval: float = 2.0, history_size: int = 8640):
+    _CUMULATIVE_FIELD_SUFFIXES = {
+        "requests": ("num_requests", "requests", "request_success"),
+        "input_tokens": ("prompt_tokens",),
+        "output_tokens": ("generation_tokens",),
+        "kv_hits": ("cached_tokens", "prefix_cache_hits"),
+        "kv_evictions": ("evicted_tokens", "kv_block_idle_before_evict_seconds_count"),
+    }
+    _LABEL_PATTERN = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"((?:\\.|[^"\\])*)"')
+
+    def __init__(
+        self,
+        interval: float = 2.0,
+        history_size: int = 8640,
+        cumulative_ttl_seconds: float = 300.0,
+    ):
         self.interval = max(1.0, min(interval, 60.0))
+        self.cumulative_ttl_seconds = max(1.0, cumulative_ttl_seconds)
         self.target_url: Optional[str] = None
         self.api_key: Optional[str] = None
         self.metrics: Dict[str, Dict[str, Any]] = {}
+        self.cumulative_groups: Dict[tuple, Dict[str, Any]] = {}
         self.history: deque = deque(maxlen=history_size)
         self.last_scrape: Optional[datetime] = None
         self.last_simulated: Optional[datetime] = None
@@ -76,6 +94,7 @@ class MetricStore:
         self.api_key = api_key or None
         self.metrics.clear()
         self.history.clear()
+        self.cumulative_groups.clear()
         self.last_scrape = None
         self.last_simulated = None
         self._warned = False
@@ -146,7 +165,7 @@ class MetricStore:
                 async with session.get(f"{self.target_url}/metrics") as response:
                     if response.status != 200:
                         raise RuntimeError(f"/metrics returned HTTP {response.status}")
-                    parsed = self.parse_prometheus(await response.text())
+                    parsed, samples = self._parse_prometheus_payload(await response.text())
         except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as exc:
             if not self._warned:
                 logger.warning("Cannot scrape vLLM metrics from %s: %s", self.target_url, exc)
@@ -157,8 +176,10 @@ class MetricStore:
         if not parsed:
             self._mark_unavailable()
             return False
+        now = datetime.now()
         self.metrics = parsed
-        self.last_scrape = datetime.now()
+        self._update_cumulative_groups(samples, now)
+        self.last_scrape = now
         self.last_simulated = None
         self._warned = False
         self._append_snapshot()
@@ -166,9 +187,14 @@ class MetricStore:
 
     @staticmethod
     def parse_prometheus(text: str) -> Dict[str, Dict[str, Any]]:
+        return MetricStore._parse_prometheus_payload(text)[0]
+
+    @staticmethod
+    def _parse_prometheus_payload(text: str) -> tuple:
         types: Dict[str, str] = {}
         metrics: Dict[str, Dict[str, Any]] = {}
         buckets: Dict[str, Dict[float, float]] = {}
+        samples = []
         for line in text.splitlines():
             line = line.strip()
             if not line:
@@ -177,6 +203,7 @@ class MetricStore:
                 parts = line.split()
                 if len(parts) >= 4:
                     types[parts[2]] = parts[3]
+                    types[MetricStore._base_name(parts[2])] = parts[3]
                 continue
             if line.startswith("#"):
                 continue
@@ -195,15 +222,27 @@ class MetricStore:
                 continue
             if name.endswith("_sum") or name.endswith("_count"):
                 key = f"{base}{'_sum' if name.endswith('_sum') else '_count'}"
+                sample_value = value
+                sample_labels = labels
                 if types.get(base) == "histogram":
                     value += metrics.get(key, {}).get("value", 0.0)
                     labels = ""
                 metrics[key] = {
                     "value": value, "type": "counter", "labels": labels
                 }
+                samples.append({
+                    "key": key,
+                    "value": sample_value,
+                    "labels": MetricStore._parse_labels(sample_labels),
+                })
                 continue
             key = base if name.endswith("_total") else name
             metrics[key] = {"value": value, "type": types.get(base, "gauge"), "labels": labels}
+            samples.append({
+                "key": key,
+                "value": value,
+                "labels": MetricStore._parse_labels(labels),
+            })
         for base, values in buckets.items():
             bucket_values = list(values.items())
             percentiles = MetricStore._percentiles(bucket_values)
@@ -214,7 +253,100 @@ class MetricStore:
                     metrics[f"{base}_bucket_le_{label}"] = {
                         "value": count, "type": "histogram_bucket", "labels": f'le="{label}"'
                     }
-        return metrics
+        return metrics, samples
+
+    @staticmethod
+    def _parse_labels(labels: str) -> Dict[str, str]:
+        parsed = {}
+        for match in MetricStore._LABEL_PATTERN.finditer(labels):
+            value = match.group(2).replace(r'\"', '"').replace(r"\\", "\\")
+            parsed[match.group(1)] = value
+        return parsed
+
+    def _update_cumulative_groups(self, samples: list, now: Optional[datetime] = None) -> None:
+        """Aggregate counters by runtime, engine type, and model.
+
+        Rank-, source-, and finish-reason label dimensions are intentionally
+        summed inside a group. Counter resets add the new counter value to the
+        retained total instead of making the displayed cumulative value drop.
+        """
+        observed_at = now or datetime.now()
+        grouped: Dict[tuple, Dict[str, float]] = {}
+        candidate_keys = {
+            f"{runtime}:{suffix}"
+            for runtime in ("vllm", "sglang")
+            for suffixes in self._CUMULATIVE_FIELD_SUFFIXES.values()
+            for suffix in suffixes
+        }
+        for sample in samples:
+            key = sample.get("key", "")
+            value = sample.get("value")
+            if key not in candidate_keys or not isinstance(value, (int, float)) or not math.isfinite(value):
+                continue
+            runtime = key.split(":", 1)[0]
+            labels = sample.get("labels") or {}
+            engine_type = labels.get("engine_type") or runtime
+            model_name = labels.get("model_name") or labels.get("served_model_name") or "unknown"
+            group_key = (runtime, engine_type, model_name)
+            group_values = grouped.setdefault(group_key, {})
+            group_values[key] = group_values.get(key, 0.0) + value
+
+        for (runtime, engine_type, model_name), raw_metrics in grouped.items():
+            group_key = (runtime, engine_type, model_name)
+            group = self.cumulative_groups.setdefault(group_key, {
+                "runtime": runtime,
+                "engine_type": engine_type,
+                "model_name": model_name,
+                "last_seen": observed_at,
+                "counters": {},
+            })
+            group["last_seen"] = observed_at
+            counters = group["counters"]
+            for field, suffixes in self._CUMULATIVE_FIELD_SUFFIXES.items():
+                candidates = [f"{runtime}:{suffix}" for suffix in suffixes]
+                source = next((candidate for candidate in candidates if candidate in raw_metrics), None)
+                if source is None:
+                    continue
+                raw_value = raw_metrics[source]
+                state = counters.get(field)
+                if state is None:
+                    counters[field] = {"source": source, "raw": raw_value, "total": raw_value}
+                    continue
+                if state["source"] != source:
+                    state.update({"source": source, "raw": raw_value})
+                    continue
+                increment = raw_value - state["raw"] if raw_value >= state["raw"] else raw_value
+                state["raw"] = raw_value
+                state["total"] += increment
+
+        self._cleanup_cumulative_groups(observed_at)
+
+    def _cleanup_cumulative_groups(self, now: Optional[datetime] = None) -> None:
+        observed_at = now or datetime.now()
+        cutoff = observed_at - timedelta(seconds=self.cumulative_ttl_seconds)
+        for key, group in list(self.cumulative_groups.items()):
+            if group["last_seen"] < cutoff:
+                self.cumulative_groups.pop(key, None)
+
+    def get_cumulative_groups(self, now: Optional[datetime] = None) -> list:
+        observed_at = now or datetime.now()
+        self._cleanup_cumulative_groups(observed_at)
+        output = []
+        for group in self.cumulative_groups.values():
+            age = max(0.0, (observed_at - group["last_seen"]).total_seconds())
+            output.append({
+                "runtime": group["runtime"],
+                "engine_type": group["engine_type"],
+                "model_name": group["model_name"],
+                "updated_at": group["last_seen"].isoformat(),
+                "age_seconds": round(age, 1),
+                "expires_in_seconds": round(max(0.0, self.cumulative_ttl_seconds - age), 1),
+                "values": {
+                    field: state["total"]
+                    for field, state in group["counters"].items()
+                },
+            })
+        return sorted(output, key=lambda item: (item["model_name"], item["runtime"], item["engine_type"]))
 
     @staticmethod
     def _parse_sample(line: str):
@@ -432,7 +564,18 @@ def _configured_poll_interval() -> float:
         return 2.0
 
 
-store = MetricStore(interval=_configured_poll_interval())
+def _configured_cumulative_ttl() -> float:
+    try:
+        return max(30.0, min(float(os.getenv("CUMULATIVE_METRICS_TTL_SECONDS", "300")), 86400.0))
+    except ValueError:
+        logger.warning("Invalid CUMULATIVE_METRICS_TTL_SECONDS; using 300 seconds")
+        return 300.0
+
+
+store = MetricStore(
+    interval=_configured_poll_interval(),
+    cumulative_ttl_seconds=_configured_cumulative_ttl(),
+)
 
 
 @app.on_event("startup")
@@ -484,7 +627,9 @@ async def all_metrics() -> Dict[str, Any]:
         backend = "demo"
     return {"metrics": store.metrics, "scrape_age_seconds": age, "metric_count": len(store.metrics), "source": source,
             "run_mode": "remote" if store.target_url else "unknown", "backend": backend,
-            "scrape_interval_seconds": store.interval}
+            "scrape_interval_seconds": store.interval,
+            "cumulative_groups": store.get_cumulative_groups(),
+            "cumulative_ttl_seconds": store.cumulative_ttl_seconds}
 
 
 @app.get("/api/vllm/metrics/history")
@@ -523,6 +668,11 @@ async def simulate_metrics(request: SimulateMetricsRequest) -> Dict[str, str]:
     store.metrics = {key_map[key]: {"value": value / 100 if key in percent_keys else value, "type": "gauge", "labels": ""}
                      for key, value in values.items()}
     now = datetime.now()
+    store.cumulative_groups.clear()
+    store._update_cumulative_groups([
+        {"key": key, "value": entry["value"], "labels": {"model_name": "demo", "engine_type": "demo"}}
+        for key, entry in store.metrics.items()
+    ], now)
     store.last_simulated, store.last_scrape = now, None
     for index in range(30):
         factor = 1 + random.uniform(-.12, .12)
@@ -535,6 +685,7 @@ async def simulate_metrics(request: SimulateMetricsRequest) -> Dict[str, str]:
 async def reset_simulation() -> Dict[str, str]:
     store.metrics.clear()
     store.history.clear()
+    store.cumulative_groups.clear()
     store.last_scrape = None
     store.last_simulated = None
     return {"status": "ok"}

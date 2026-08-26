@@ -288,6 +288,8 @@ const ObservabilityModule = {
     _liveHistory: [],
     _liveCharts: [],
     _liveFetchInProgress: false,
+    _cumulativeGroups: [],
+    _cumulativeTtlSeconds: 300,
     _currentModelName: '',
     _currentDraftModelName: '',
 
@@ -485,6 +487,8 @@ const ObservabilityModule = {
         this._showNoData(false, all);
         this._latestMetrics = metrics;
         this._latestBackend = all.backend;
+        this._cumulativeGroups = Array.isArray(all.cumulative_groups) ? all.cumulative_groups : [];
+        this._cumulativeTtlSeconds = all.cumulative_ttl_seconds || 300;
         this._updateCurrentModelName(metrics);
 
         const ageEl = document.getElementById('obs-scrape-age');
@@ -519,6 +523,7 @@ const ObservabilityModule = {
         this._latestBackend = null;
         this._liveDescriptors = [];
         this._liveHistory = [];
+        this._cumulativeGroups = [];
         this._liveCharts.forEach((chart) => chart.destroy());
         this._liveCharts = [];
         const liveCharts = document.getElementById('obs-live-charts');
@@ -670,67 +675,103 @@ const ObservabilityModule = {
         }
     },
 
+    _legacyCumulativeGroup(metrics) {
+        const prefix = this._latestBackend === 'sglang' ? 'sglang:' : 'vllm:';
+        const isSglang = this._latestBackend === 'sglang';
+        const valueFor = (keys) => {
+            const key = keys.find((candidate) => metrics[candidate]?.value != null);
+            return key ? metrics[key].value : null;
+        };
+        return {
+            runtime: this._latestBackend || 'unknown',
+            engine_type: this._latestBackend || 'unknown',
+            model_name: this._currentModelName || 'unknown',
+            age_seconds: null,
+            expires_in_seconds: this._cumulativeTtlSeconds,
+            values: {
+                requests: valueFor([`${prefix}num_requests`, `${prefix}requests`, `${prefix}request_success`]),
+                input_tokens: valueFor([`${prefix}prompt_tokens`]),
+                output_tokens: valueFor([`${prefix}generation_tokens`]),
+                kv_hits: valueFor(isSglang ? ['sglang:cached_tokens'] : ['vllm:prefix_cache_hits']),
+                kv_evictions: valueFor(isSglang
+                    ? ['sglang:evicted_tokens']
+                    : ['vllm:kv_block_idle_before_evict_seconds_count']),
+            },
+        };
+    },
+
     _renderLiveStats(metrics) {
         const container = document.getElementById('obs-live-stats');
         if (!container) return;
-        const prefix = this._latestBackend === 'sglang' ? 'sglang:' : 'vllm:';
-        const isSglang = this._latestBackend === 'sglang';
-        const cards = [
+        const groups = this._cumulativeGroups.length
+            ? this._cumulativeGroups
+            : [this._legacyCumulativeGroup(metrics)];
+        const cardSpecs = [
             {
                 label: 'Cumulative Requests',
-                keys: [`${prefix}num_requests`, `${prefix}requests`, `${prefix}request_success`],
+                field: 'requests',
                 format: 'integer',
-                note: 'service process total',
+                note: 'aggregated requests',
                 color: '#60a5fa',
             },
             {
                 label: 'Cumulative Input Tokens',
-                keys: [`${prefix}prompt_tokens`],
+                field: 'input_tokens',
                 format: 'integer',
-                note: 'service process total',
+                note: 'aggregated input tokens',
                 color: '#a78bfa',
             },
             {
                 label: 'Cumulative Output Tokens',
-                keys: [`${prefix}generation_tokens`],
+                field: 'output_tokens',
                 format: 'integer',
-                note: 'service process total',
+                note: 'aggregated output tokens',
                 color: '#34d399',
             },
             {
                 label: 'Cumulative KV Hits',
-                keys: isSglang ? ['sglang:cached_tokens'] : ['vllm:prefix_cache_hits'],
+                field: 'kv_hits',
                 format: 'integer',
-                unit: 'tokens',
-                note: 'cached tokens served',
+                note: 'aggregated cached tokens',
                 color: '#f472b6',
             },
             {
                 label: 'Cumulative KV Evictions',
-                keys: isSglang
-                    ? ['sglang:evicted_tokens']
-                    : ['vllm:kv_block_idle_before_evict_seconds_count'],
+                field: 'kv_evictions',
                 format: 'integer',
-                unit: isSglang ? 'tokens' : 'blocks',
-                note: isSglang ? 'evicted tokens' : 'sampled eviction events',
-                unavailableNote: isSglang
-                    ? 'not exposed by this runtime'
-                    : 'enable --kv-cache-metrics-sample',
+                note: 'aggregated eviction counter',
                 color: '#fb923c',
             },
-        ].map((card) => {
-            const key = card.keys.find((candidate) => metrics[candidate]?.value != null);
-            return key
-                ? { ...card, value: metrics[key].value }
-                : { ...card, value: null, note: card.unavailableNote || 'not exposed by this runtime' };
-        });
+        ];
 
         container.style.display = '';
-        container.innerHTML = cards.map((card) => `<article class="obs-live-stat" style="--stat-accent:${card.color}">
-            <span class="obs-live-stat-label">${this._escapeHtml(card.label)}</span>
-            <strong class="obs-live-stat-current">${formatMetricValue(card.value, card.format, card.unit)}</strong>
-            <span class="obs-live-stat-note">${this._escapeHtml(card.note)}</span>
-        </article>`).join('');
+        container.innerHTML = groups.map((group) => {
+            const runtimeNames = { vllm: 'vLLM', sglang: 'SGLang', demo: 'Demo' };
+            const runtime = runtimeNames[group.runtime] || group.runtime || 'Unknown';
+            const engine = group.engine_type && group.engine_type !== group.runtime
+                ? `${runtime} / ${group.engine_type}`
+                : runtime;
+            const age = Number.isFinite(group.age_seconds) ? `${group.age_seconds.toFixed(1)}s ago` : 'current sample';
+            const expires = Number.isFinite(group.expires_in_seconds)
+                ? `${Math.ceil(group.expires_in_seconds)}s TTL`
+                : `${this._cumulativeTtlSeconds}s TTL`;
+            const cards = cardSpecs.map((spec) => ({
+                ...spec,
+                value: group.values?.[spec.field] ?? null,
+                note: group.values?.[spec.field] == null ? 'not exposed by this runtime' : spec.note,
+            }));
+            return `<section class="obs-live-stat-group">
+                <div class="obs-live-stat-group-heading">
+                    <div><strong>${this._escapeHtml(group.model_name || 'unknown')}</strong><span>${this._escapeHtml(engine)}</span></div>
+                    <small>last seen ${this._escapeHtml(age)} · ${this._escapeHtml(expires)}</small>
+                </div>
+                <div class="obs-live-stat-grid">${cards.map((card) => `<article class="obs-live-stat" style="--stat-accent:${card.color}">
+                    <span class="obs-live-stat-label">${this._escapeHtml(card.label)}</span>
+                    <strong class="obs-live-stat-current">${formatMetricValue(card.value, card.format)}</strong>
+                    <span class="obs-live-stat-note">${this._escapeHtml(card.note)}</span>
+                </article>`).join('')}</div>
+            </section>`;
+        }).join('');
     },
 
     _rankLiveDescriptors(descriptors, limit) {
@@ -762,6 +803,9 @@ const ObservabilityModule = {
             'Decode Throughput', 'Input Token Rate',
             'Running Requests', 'Waiting Requests', 'Queued Requests',
             'Mean Accepted Length', 'Accepted Length', 'Token Usage (tokens)', 'Token Usage (%)', 'Cache Usage',
+            'Radix Cache Hit Rate', 'KV Cache Hit Rate', 'KV Cache Hits',
+            'KV Cache Evictions', 'Sampled KV Evictions',
+            'Eviction Idle Time Avg', 'Eviction Idle Time P90',
         ];
         return labels
             .map((label) => descriptors.find((descriptor) => descriptor.label === label))

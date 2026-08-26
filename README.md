@@ -27,6 +27,10 @@ statistic that the endpoint did not export.
 
 The default sampling interval is one second. Set `METRICS_POLL_INTERVAL` to
 any value from 1 to 60 seconds when a different collection cadence is needed.
+The cumulative cards aggregate counter series by runtime, engine type, and
+model name, summing rank/source/reason label dimensions inside each group.
+Groups that disappear are retained for five minutes by default; set
+`CUMULATIVE_METRICS_TTL_SECONDS` (30-86400) to change the cleanup TTL.
 
 For unattended deployment, set `VLLM_METRICS_URL` and optionally
 `VLLM_METRICS_API_KEY` before starting the service.
