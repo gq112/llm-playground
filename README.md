@@ -48,3 +48,32 @@ expose a true eviction counter, so no vLLM eviction series is synthesized. Its
 sampled block-eviction idle time, lifetime, and reuse gaps appear when started with
 `--kv-cache-metrics-sample` set to a non-zero sampling rate; request
 preemptions remain a separate metric because they are not cache evictions.
+
+## GPU bottleneck monitoring with DCGM
+
+The **GPU 瓶颈** tab can poll an NVIDIA `dcgm-exporter` directly; Prometheus is
+not required. Enter the exporter root URL (for example
+`http://master-1:9400`) in the tab, or set `DCGM_METRICS_URL` before starting
+the dashboard. The dashboard stores the target locally, polls `/metrics` at
+the same interval as the inference runtime, and retains dense recent samples
+plus a sparse history for up to 48 hours.
+
+Per-GPU panels and charts support GPU utilization, framebuffer use, power,
+clocks, temperature, SM activity/occupancy, Tensor activity, device-memory
+activity, and PCIe throughput. Both legacy exporter names such as
+`DCGM_FI_PROF_SM_ACTIVE` and the newer ratio names such as
+`DCGM_FI_PROF_SM_UTIL_RATIO` are accepted.
+
+Reliable online diagnosis requires these three profiling fields:
+
+```text
+DCGM_FI_PROF_SM_ACTIVE
+DCGM_FI_PROF_PIPE_TENSOR_ACTIVE
+DCGM_FI_PROF_DRAM_ACTIVE
+```
+
+When `SM_ACTIVE` is absent, the dashboard reports insufficient evidence rather
+than inferring a bottleneck from GPU Util alone. When the signals are present,
+the rules distinguish GPU under-utilization, compute-bound tendency,
+memory-bandwidth-bound tendency, and mixed saturation. They are interval-level
+operational signals, not a replacement for Nsight kernel profiling.

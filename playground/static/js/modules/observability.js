@@ -296,6 +296,14 @@ const ObservabilityModule = {
     _cumulativeTtlSeconds: 300,
     _currentModelName: '',
     _currentDraftModelName: '',
+    _dcgmStatus: null,
+    _gpuHistory: [],
+    _gpuInferenceHistory: [],
+    _gpuCharts: [],
+    _gpuSeconds: 300,
+    _gpuSelected: '',
+    _gpuHistoryLastFetchAt: 0,
+    _gpuHistoryInProgress: false,
 
     // -- Template loading ---------------------------------------------------
 
@@ -311,7 +319,7 @@ const ObservabilityModule = {
         }
 
         try {
-            const response = await fetch('/static/templates/observability.html?v=20260827-history-ranges-v2');
+            const response = await fetch('/static/templates/observability.html?v=20260827-dcgm-bottleneck-v1');
             if (!response.ok) throw new Error(`Failed to load template: ${response.status}`);
 
             const html = await response.text();
@@ -473,6 +481,25 @@ const ObservabilityModule = {
         // Alert settings
         const alertSettingsBtn = document.getElementById('obs-alerts-settings-btn');
         if (alertSettingsBtn) alertSettingsBtn.addEventListener('click', () => this._showAlertSettings());
+
+        const dcgmForm = document.getElementById('obs-dcgm-form');
+        if (dcgmForm) dcgmForm.addEventListener('submit', (event) => this._configureDcgm(event));
+
+        const dcgmDisconnect = document.getElementById('obs-dcgm-disconnect');
+        if (dcgmDisconnect) dcgmDisconnect.addEventListener('click', () => this._disconnectDcgm());
+
+        const gpuSelector = document.getElementById('obs-gpu-selector');
+        if (gpuSelector) gpuSelector.addEventListener('change', () => {
+            this._gpuSelected = gpuSelector.value;
+            this._renderGpuDashboard(true);
+        });
+
+        const gpuRange = document.getElementById('obs-gpu-range');
+        if (gpuRange) gpuRange.addEventListener('change', () => {
+            this._gpuSeconds = Number.parseInt(gpuRange.value, 10) || 300;
+            this._gpuHistoryLastFetchAt = 0;
+            this._refreshGpuHistory(true);
+        });
     },
 
     _switchTab(tabId) {
@@ -493,12 +520,17 @@ const ObservabilityModule = {
         if (tabId === 'latency' && this._latestMetrics) {
             this._renderLatency(this._latestMetrics);
         }
+        if (tabId === 'gpu') {
+            this._renderGpuDashboard(true);
+            this._refreshGpuHistory(true);
+        }
     },
 
     _onMetrics({ all }) {
         const source = (all && all.source) || 'none';
         this._updateDemoButtons(source);
         this._updateBackendBadge(all?.backend);
+        this._onDcgm(all?.dcgm);
 
         if (!all || !all.metrics) {
             this._clearUnavailableMetrics();
@@ -1020,6 +1052,388 @@ const ObservabilityModule = {
                         },
                     },
                 }, [timestamps, ...values], host));
+            } catch (error) {
+                host.textContent = `Chart unavailable: ${error.message}`;
+            }
+        });
+    },
+
+    // -- DCGM / GPU bottleneck tab -----------------------------------------
+
+    async _configureDcgm(event) {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const input = document.getElementById('obs-dcgm-url');
+        const status = document.getElementById('obs-dcgm-status');
+        const button = form.querySelector('button[type="submit"]');
+        if (!input || !input.value.trim()) return;
+        button.disabled = true;
+        if (status) {
+            status.textContent = '正在连接 dcgm-exporter…';
+            status.dataset.state = 'pending';
+        }
+        try {
+            const response = await fetch('/api/observability/dcgm-target', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: input.value.trim() }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.detail || '无法保存 DCGM 数据源');
+            input.value = result.url;
+            if (status) status.textContent = `正在采集 ${result.url}/metrics`;
+            this._gpuHistory = [];
+            this._gpuInferenceHistory = [];
+            this._gpuHistoryLastFetchAt = 0;
+        } catch (error) {
+            if (status) {
+                status.textContent = error.message;
+                status.dataset.state = 'error';
+            }
+        } finally {
+            button.disabled = false;
+        }
+    },
+
+    async _disconnectDcgm() {
+        const url = this._dcgmStatus?.url;
+        if (url && !window.confirm(`断开并删除 DCGM 数据源 ${url}？\n已采集的 GPU 历史数据也会被清除。`)) return;
+        try {
+            const response = await fetch('/api/observability/dcgm-target', { method: 'DELETE' });
+            if (!response.ok) throw new Error('无法删除 DCGM 数据源');
+            this._dcgmStatus = { configured: false, available: false, gpus: [], summary: {} };
+            this._gpuHistory = [];
+            this._gpuInferenceHistory = [];
+            this._gpuSelected = '';
+            const input = document.getElementById('obs-dcgm-url');
+            if (input) input.value = '';
+            this._renderGpuDashboard(true);
+        } catch (error) {
+            const status = document.getElementById('obs-dcgm-status');
+            if (status) {
+                status.textContent = error.message;
+                status.dataset.state = 'error';
+            }
+        }
+    },
+
+    _onDcgm(status) {
+        this._dcgmStatus = status || { configured: false, available: false, gpus: [], summary: {} };
+        this._renderGpuDashboard(false);
+        if (
+            this._currentTab === 'gpu'
+            && this._dcgmStatus.available
+            && Date.now() - this._gpuHistoryLastFetchAt >= 1800
+        ) {
+            this._refreshGpuHistory();
+        }
+    },
+
+    _syncGpuSelector(gpus) {
+        const selector = document.getElementById('obs-gpu-selector');
+        if (!selector) return;
+        const ids = gpus.map((gpu) => String(gpu.gpu));
+        if (!ids.includes(this._gpuSelected)) this._gpuSelected = ids[0] || '';
+        const signature = ids.join('|');
+        if (selector.dataset.signature !== signature) {
+            selector.replaceChildren(...ids.map((id) => new Option(`GPU ${id}`, id)));
+            selector.dataset.signature = signature;
+        }
+        selector.value = this._gpuSelected;
+        selector.disabled = !ids.length;
+    },
+
+    _renderGpuDashboard(rebuildCharts = false) {
+        const status = this._dcgmStatus || {};
+        const gpus = Array.isArray(status.gpus) ? status.gpus : [];
+        const input = document.getElementById('obs-dcgm-url');
+        if (input && document.activeElement !== input && status.url) input.value = status.url;
+        this._syncGpuSelector(gpus);
+
+        const statusEl = document.getElementById('obs-dcgm-status');
+        const ageEl = document.getElementById('obs-gpu-scrape-age');
+        const noData = document.getElementById('obs-gpu-no-data');
+        if (statusEl) {
+            if (!status.configured) {
+                statusEl.textContent = '尚未配置 DCGM 数据源';
+                statusEl.dataset.state = 'idle';
+            } else if (status.available) {
+                statusEl.textContent = `已连接 ${status.url}/metrics · ${status.gpu_count} GPUs`;
+                statusEl.dataset.state = 'ok';
+            } else {
+                statusEl.textContent = `无法采集 ${status.url}/metrics${status.last_error ? ` · ${status.last_error}` : ''}`;
+                statusEl.dataset.state = 'error';
+            }
+        }
+        if (ageEl) {
+            ageEl.textContent = Number.isFinite(status.scrape_age_seconds)
+                ? `Last scrape ${status.scrape_age_seconds.toFixed(1)}s ago`
+                : '';
+            ageEl.style.display = status.available ? '' : 'none';
+        }
+        if (noData) {
+            noData.style.display = status.available ? 'none' : '';
+            const title = noData.querySelector('h3');
+            const copy = noData.querySelector('p');
+            if (title) title.textContent = status.configured ? 'DCGM 指标不可用' : '尚无 GPU 指标';
+            if (copy) copy.textContent = status.configured
+                ? '确认仪表盘所在机器能够访问该地址，并检查 exporter 是否暴露所需指标。'
+                : '配置 dcgm-exporter 地址后，这里会展示 GPU0–GPU7 的瓶颈判断和历史曲线。';
+        }
+
+        const missing = document.getElementById('obs-gpu-missing');
+        const missingNames = {
+            sm_active: 'SM Active', tensor_active: 'Tensor Active', dram_active: 'DRAM Active',
+        };
+        const missingFields = status.missing_diagnostic_fields || [];
+        if (missing) {
+            missing.style.display = status.available && missingFields.length ? '' : 'none';
+            missing.innerHTML = missingFields.length
+                ? `<strong>诊断信号不完整：</strong>缺少 ${missingFields.map((field) => missingNames[field] || field).join('、')}。请在 dcgm-exporter customMetrics 中启用对应字段。`
+                : '';
+        }
+
+        this._renderGpuSummary(status.summary || {}, gpus.length);
+        this._renderGpuDiagnoses(gpus);
+        if (rebuildCharts && this._currentTab === 'gpu') this._buildGpuCharts();
+    },
+
+    _renderGpuSummary(summary, gpuCount) {
+        const container = document.getElementById('obs-gpu-summary');
+        if (!container) return;
+        if (!gpuCount) {
+            container.replaceChildren();
+            return;
+        }
+        const cards = [
+            ['GPU 数量', gpuCount, 'integer'],
+            ['平均 GPU Util', summary.gpu_util, 'percent'],
+            ['平均 SM Active', summary.sm_active, 'percent'],
+            ['平均 Tensor Active', summary.tensor_active, 'percent'],
+            ['平均 DRAM Active', summary.dram_active, 'percent'],
+            ['显存已用', summary.fb_used_mib, 'mib'],
+            ['总功耗', summary.power_watts, 'watts'],
+        ];
+        container.innerHTML = cards.map(([label, value, format]) => `<article class="obs-gpu-summary-card">
+            <span>${this._escapeHtml(label)}</span>
+            <strong>${this._escapeHtml(this._formatGpuMetric(value, format))}</strong>
+        </article>`).join('');
+    },
+
+    _renderGpuDiagnoses(gpus) {
+        const container = document.getElementById('obs-gpu-diagnoses');
+        if (!container) return;
+        const labels = {
+            sm_active: 'SM', tensor_active: 'Tensor', dram_active: '显存接口', gpu_util: 'GPU Util',
+        };
+        container.innerHTML = gpus.map((gpu) => {
+            const diagnosis = gpu.diagnosis || {};
+            const metrics = gpu.metrics || {};
+            const signals = ['gpu_util', 'sm_active', 'tensor_active', 'dram_active'].map((field) => {
+                const value = metrics[field];
+                return `<div class="obs-gpu-signal">
+                    <span>${labels[field]}</span>
+                    <i><b style="width:${Number.isFinite(value) ? Math.max(0, Math.min(100, value * 100)) : 0}%"></b></i>
+                    <strong>${this._formatGpuMetric(value, 'percent')}</strong>
+                </div>`;
+            }).join('');
+            const confidenceNames = { high: '高', medium: '中', low: '低', none: '不可判定' };
+            return `<article class="obs-gpu-diagnosis ${this._escapeHtml(diagnosis.severity || 'neutral')}">
+                <header>
+                    <div><strong>GPU ${this._escapeHtml(gpu.gpu)}</strong><span>${this._escapeHtml(gpu.model || gpu.device || '')}</span></div>
+                    <em>${this._escapeHtml(diagnosis.label || '等待诊断')}</em>
+                </header>
+                <p>${this._escapeHtml(diagnosis.reason || '')}</p>
+                <div class="obs-gpu-signals">${signals}</div>
+                <footer><span>置信度：${this._escapeHtml(confidenceNames[diagnosis.confidence] || diagnosis.confidence || '--')}</span><span>${this._escapeHtml(gpu.uuid || '')}</span></footer>
+            </article>`;
+        }).join('');
+    },
+
+    async _refreshGpuHistory(force = false) {
+        if (!this._dcgmStatus?.configured || this._gpuHistoryInProgress) return;
+        if (!force && Date.now() - this._gpuHistoryLastFetchAt < 1500) return;
+        this._gpuHistoryInProgress = true;
+        try {
+            const [response, inferenceHistory] = await Promise.all([
+                fetch(`/api/observability/dcgm/history?seconds=${this._gpuSeconds}`),
+                metricsPoller.getHistory(null, this._gpuSeconds),
+            ]);
+            if (response.ok) this._gpuHistory = await response.json();
+            this._gpuInferenceHistory = inferenceHistory;
+            this._gpuHistoryLastFetchAt = Date.now();
+            this._renderGpuDashboard(true);
+        } finally {
+            this._gpuHistoryInProgress = false;
+        }
+    },
+
+    _gpuRangeLabel() {
+        const labels = {
+            300: 'last 5 min', 900: 'last 15 min', 1800: 'last 30 min', 3600: 'last 1 hour',
+            10800: 'last 3 hours', 21600: 'last 6 hours', 43200: 'last 12 hours',
+            86400: 'last 24 hours', 172800: 'last 2 days',
+        };
+        return labels[this._gpuSeconds] || `last ${this._gpuSeconds}s`;
+    },
+
+    _formatGpuMetric(value, format = 'number') {
+        if (!Number.isFinite(value)) return '--';
+        if (format === 'integer') return Math.round(value).toLocaleString();
+        if (format === 'percent') return `${(value * 100).toFixed(1)}%`;
+        if (format === 'mib') return value >= 1024 ? `${(value / 1024).toFixed(1)} GiB` : `${value.toFixed(0)} MiB`;
+        if (format === 'gib') return `${value.toFixed(2)} GiB`;
+        if (format === 'watts') return `${value.toFixed(0)} W`;
+        if (format === 'mhz') return `${value.toFixed(0)} MHz`;
+        if (format === 'celsius') return `${value.toFixed(0)} °C`;
+        if (format === 'gbps') return `${value.toFixed(2)} GB/s`;
+        return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    },
+
+    _buildGpuCharts() {
+        const container = document.getElementById('obs-gpu-charts');
+        if (!container) return;
+        this._gpuCharts.forEach((chart) => chart.destroy());
+        this._gpuCharts = [];
+        if (!this._gpuSelected || !this._gpuHistory.length) {
+            container.innerHTML = this._dcgmStatus?.available
+                ? '<div class="obs-live-chart-empty">正在积累 GPU 历史趋势数据…</div>'
+                : '';
+            return;
+        }
+
+        const specs = [
+            { title: '核心活跃度', format: 'percent', fields: [
+                ['sm_active', 'SM Active'], ['tensor_active', 'Tensor Active'],
+                ['dram_active', 'DRAM Active'], ['gpu_util', 'GPU Util'], ['sm_occupancy', 'SM Occupancy'],
+            ] },
+            { title: '显存占用', format: 'gib', fields: [['fb_used_mib', 'Framebuffer Used']] },
+            { title: 'GPU 功耗', format: 'watts', fields: [['power_watts', 'Power']] },
+            { title: 'PCIe 吞吐', format: 'gbps', fields: [
+                ['pcie_tx_bytes_per_second', 'PCIe TX'], ['pcie_rx_bytes_per_second', 'PCIe RX'],
+            ] },
+            { title: 'NVLink 吞吐', format: 'gbps', fields: [['nvlink_bytes_per_second', 'NVLink']] },
+            { title: '辅助引擎利用率', format: 'percent', fields: [
+                ['memory_copy_util', 'Memory Copy'], ['decoder_util', 'Decoder'], ['encoder_util', 'Encoder'],
+            ] },
+            { title: 'GPU 频率', format: 'mhz', fields: [
+                ['sm_clock_mhz', 'SM Clock'], ['memory_clock_mhz', 'Memory Clock'],
+            ] },
+            { title: 'GPU 温度', format: 'celsius', fields: [
+                ['temperature_c', 'GPU Temperature'], ['memory_temperature_c', 'Memory Temperature'],
+            ] },
+        ];
+        const transform = (value, format) => {
+            if (!Number.isFinite(value)) return null;
+            if (format === 'gib') return value / 1024;
+            if (format === 'gbps') return value / 1e9;
+            return value;
+        };
+        const timestamps = this._gpuHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
+        const charts = specs.map((spec) => {
+            const fields = spec.fields.filter(([field]) => this._gpuHistory.some((point) =>
+                Number.isFinite(point.gpus?.[this._gpuSelected]?.[field])));
+            return { ...spec, fields };
+        }).filter((spec) => spec.fields.length);
+        const palette = ['#60a5fa', '#f472b6', '#f59e0b', '#34d399', '#a78bfa', '#22d3ee'];
+        container.innerHTML = charts.length ? charts.map((chart, index) => {
+            const currentRaw = this._dcgmStatus?.gpus?.find((gpu) => String(gpu.gpu) === this._gpuSelected)
+                ?.metrics?.[chart.fields[0][0]];
+            const current = transform(currentRaw, chart.format);
+            return `<article class="obs-live-chart" style="--chart-accent:${palette[index % palette.length]}">
+                <div class="obs-live-chart-head"><div><span class="obs-live-chart-title">${this._escapeHtml(chart.title)}</span><span class="obs-live-chart-window">GPU ${this._escapeHtml(this._gpuSelected)} · ${this._escapeHtml(this._gpuRangeLabel())}</span></div><strong>${this._escapeHtml(this._formatGpuMetric(current, chart.format))}</strong></div>
+                <div class="obs-live-chart-canvas" id="obs-gpu-chart-${index}"></div>
+                <div class="obs-live-chart-legend">${chart.fields.map(([, label], seriesIndex) => `<span><i style="--legend-color:${palette[seriesIndex % palette.length]}"></i>${this._escapeHtml(label)}</span>`).join('')}</div>
+            </article>`;
+        }).join('') : '<div class="obs-live-chart-empty">当前 exporter 尚未暴露可绘制的 GPU 指标。</div>';
+
+        charts.forEach((chart, index) => {
+            const host = document.getElementById(`obs-gpu-chart-${index}`);
+            if (!host) return;
+            const values = chart.fields.map(([field]) => this._gpuHistory.map((point) =>
+                transform(point.gpus?.[this._gpuSelected]?.[field], chart.format)));
+            const isPercent = chart.format === 'percent';
+            try {
+                this._gpuCharts.push(createLineChart({
+                    width: Math.max(120, host.parentElement.clientWidth - 18),
+                    height: 220,
+                    series: [{ label: 'Time' }, ...chart.fields.map(([, label], seriesIndex) => ({
+                        label, stroke: palette[seriesIndex % palette.length], width: 1,
+                    }))],
+                    axes: [
+                        { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } },
+                        {
+                            stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' },
+                            ...(isPercent ? { size: 52, values: (_plot, ticks) => ticks.map((value) => `${Math.round(value * 100)}%`) } : {}),
+                        },
+                    ],
+                    scales: { x: { time: true }, ...(isPercent ? { y: { range: [0, 1] } } : {}) },
+                    tooltip: {
+                        title: chart.title,
+                        modelName: `GPU ${this._gpuSelected}`,
+                        formatter: (value) => this._formatGpuMetric(value, chart.format),
+                    },
+                }, [timestamps, ...values], host));
+            } catch (error) {
+                host.textContent = `Chart unavailable: ${error.message}`;
+            }
+        });
+        this._buildGpuInferenceCharts();
+    },
+
+    _buildGpuInferenceCharts() {
+        const section = document.getElementById('obs-gpu-correlation');
+        const container = document.getElementById('obs-gpu-inference-charts');
+        if (!section || !container) return;
+        const preferredLabels = [
+            'Generation Throughput', 'Decode Throughput', 'Waiting Requests', 'Queued Requests',
+            'TTFT P90', 'TPOT P90',
+        ];
+        const descriptors = preferredLabels
+            .map((label) => this._liveDescriptors?.find((descriptor) => descriptor.label === label))
+            .filter(Boolean)
+            .filter((descriptor, index, items) => items.findIndex((item) => item.historyKey === descriptor.historyKey) === index)
+            .filter((descriptor) => this._gpuInferenceHistory.some((point) =>
+                Number.isFinite(point[descriptor.historyKey])))
+            .slice(0, 4);
+        section.style.display = descriptors.length ? '' : 'none';
+        if (!descriptors.length) {
+            container.replaceChildren();
+            return;
+        }
+        const palette = ['#60a5fa', '#f59e0b', '#f472b6', '#34d399'];
+        container.innerHTML = descriptors.map((descriptor, index) => {
+            const current = this._liveValue(descriptor, this._latestMetrics?.[descriptor.key]);
+            return `<article class="obs-live-chart" style="--chart-accent:${palette[index % palette.length]}">
+                <div class="obs-live-chart-head"><div><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)}</span><span class="obs-live-chart-window">推理服务 · ${this._escapeHtml(this._gpuRangeLabel())}</span></div><strong>${this._escapeHtml(formatMetricValue(current, descriptor.format, descriptor.unit))}</strong></div>
+                <div class="obs-live-chart-canvas" id="obs-gpu-inference-chart-${index}"></div>
+            </article>`;
+        }).join('');
+        const timestamps = this._gpuInferenceHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
+        descriptors.forEach((descriptor, index) => {
+            const host = document.getElementById(`obs-gpu-inference-chart-${index}`);
+            if (!host) return;
+            const values = this._gpuInferenceHistory.map((point) => point[descriptor.historyKey] ?? null);
+            const isPercent = descriptor.format === 'percent';
+            try {
+                this._gpuCharts.push(createLineChart({
+                    width: Math.max(120, host.parentElement.clientWidth - 18),
+                    height: 220,
+                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: palette[index], width: 1 }],
+                    axes: [
+                        { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } },
+                        {
+                            stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' },
+                            ...(isPercent ? { size: 52, values: (_plot, ticks) => ticks.map((value) => `${Math.round(value * 100)}%`) } : {}),
+                        },
+                    ],
+                    scales: { x: { time: true }, ...(isPercent ? { y: { range: [0, 1] } } : {}) },
+                    tooltip: {
+                        title: descriptor.label,
+                        modelName: this._currentModelName,
+                        formatter: (value) => formatMetricValue(value, descriptor.format, descriptor.unit),
+                    },
+                }, [timestamps, values], host));
             } catch (error) {
                 host.textContent = `Chart unavailable: ${error.message}`;
             }

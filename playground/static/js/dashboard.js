@@ -1,4 +1,4 @@
-import ObservabilityModule from './modules/observability.js?v=20260827-empty-cumulative-filter';
+import ObservabilityModule from './modules/observability.js?v=20260827-dcgm-bottleneck-v1';
 
 const targetForm = document.getElementById('target-form');
 const targetUrl = document.getElementById('target-url');

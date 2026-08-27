@@ -20,11 +20,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .dcgm import DcgmStore
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 TARGET_PATH = Path.home() / ".vllm-observability" / "target.json"
+DCGM_TARGET_PATH = Path.home() / ".vllm-observability" / "dcgm-target.json"
 
 app = FastAPI(title="推理指标观测仪表盘", version="1.0.0")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -36,6 +39,12 @@ class ObservabilityTargetRequest(BaseModel):
 
     url: str = Field(min_length=1, max_length=2048)
     api_key: Optional[str] = Field(default=None, max_length=4096)
+
+
+class DcgmTargetRequest(BaseModel):
+    """The dcgm-exporter HTTP root; metrics are fetched from ``{url}/metrics``."""
+
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class SimulateMetricsRequest(BaseModel):
@@ -890,17 +899,23 @@ store = MetricStore(
     history_retention_seconds=_configured_history_retention(),
     cumulative_ttl_seconds=_configured_cumulative_ttl(),
 )
+dcgm_store = DcgmStore(
+    target_path=DCGM_TARGET_PATH,
+    interval=_configured_poll_interval(),
+    history_retention_seconds=_configured_history_retention(),
+)
 
 
 @app.on_event("startup")
 async def startup() -> None:
     store.load_target()
-    await store.start()
+    dcgm_store.load_target()
+    await asyncio.gather(store.start(), dcgm_store.start())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    await store.stop()
+    await asyncio.gather(store.stop(), dcgm_store.stop())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -924,6 +939,28 @@ async def set_target(target: ObservabilityTargetRequest) -> Dict[str, str]:
     return {"status": "ok", "url": url}
 
 
+@app.get("/api/observability/dcgm-target")
+async def get_dcgm_target() -> Dict[str, Any]:
+    return {"url": dcgm_store.target_url or "", "configured": bool(dcgm_store.target_url)}
+
+
+@app.put("/api/observability/dcgm-target")
+async def set_dcgm_target(target: DcgmTargetRequest) -> Dict[str, str]:
+    try:
+        url = dcgm_store.configure(target.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    dcgm_store.save_target()
+    asyncio.create_task(dcgm_store.scrape())
+    return {"status": "ok", "url": url}
+
+
+@app.delete("/api/observability/dcgm-target")
+async def delete_dcgm_target() -> Dict[str, str]:
+    dcgm_store.clear_target()
+    return {"status": "ok"}
+
+
 @app.get("/api/vllm/metrics/all")
 async def all_metrics() -> Dict[str, Any]:
     age = None
@@ -944,13 +981,20 @@ async def all_metrics() -> Dict[str, Any]:
             "scrape_interval_seconds": store.interval,
             "history_retention_seconds": store.history_retention_seconds,
             "cumulative_groups": store.get_cumulative_groups(),
-            "cumulative_ttl_seconds": store.cumulative_ttl_seconds}
+            "cumulative_ttl_seconds": store.cumulative_ttl_seconds,
+            "dcgm": dcgm_store.status()}
 
 
 @app.get("/api/vllm/metrics/history")
 async def metrics_history(minutes: Optional[int] = None, seconds: Optional[int] = None) -> list:
     duration = seconds if seconds is not None else (minutes * 60 if minutes is not None else None)
     return store.get_history(duration)
+
+
+@app.get("/api/observability/dcgm/history")
+async def dcgm_history(minutes: Optional[int] = None, seconds: Optional[int] = None) -> list:
+    duration = seconds if seconds is not None else (minutes * 60 if minutes is not None else None)
+    return dcgm_store.get_history(duration)
 
 
 @app.get("/api/vllm/metrics/history/summary")
