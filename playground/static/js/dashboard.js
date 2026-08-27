@@ -1,4 +1,4 @@
-import ObservabilityModule from './modules/observability.js?v=20260827-history-ranges-v2';
+import ObservabilityModule from './modules/observability.js?v=20260827-empty-cumulative-filter';
 
 const targetForm = document.getElementById('target-form');
 const targetUrl = document.getElementById('target-url');

@@ -485,6 +485,13 @@ class MetricStore:
         output = []
         for group in self.cumulative_groups.values():
             age = max(0.0, (observed_at - group["last_seen"]).total_seconds())
+            values = {
+                field: state["total"]
+                for field, state in group["counters"].items()
+                if field in {"requests", "input_tokens", "output_tokens"}
+            }
+            if not values:
+                continue
             output.append({
                 "runtime": group["runtime"],
                 "engine_type": group["engine_type"],
@@ -492,11 +499,7 @@ class MetricStore:
                 "updated_at": group["last_seen"].isoformat(),
                 "age_seconds": round(age, 1),
                 "expires_in_seconds": round(max(0.0, self.cumulative_ttl_seconds - age), 1),
-                "values": {
-                    field: state["total"]
-                    for field, state in group["counters"].items()
-                    if field in {"requests", "input_tokens", "output_tokens"}
-                },
+                "values": values,
             })
         return sorted(output, key=lambda item: (item["model_name"], item["runtime"], item["engine_type"]))
 

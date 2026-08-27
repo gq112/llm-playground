@@ -222,6 +222,26 @@ vllm:kv_block_idle_before_evict_seconds_count{model_name="model-a",engine_type="
     assert groups == []
 
 
+def test_cache_only_group_is_not_exposed_as_cumulative_overview() -> None:
+    store = MetricStore()
+    now = datetime.now()
+
+    store._update_cumulative_groups([
+        {
+            "key": "sglang:cache_hit_rate",
+            "value": 0.5,
+            "labels": {"engine_type": "sglang"},
+        },
+        {
+            "key": "sglang:evicted_tokens",
+            "value": 42,
+            "labels": {"engine_type": "sglang"},
+        },
+    ], now)
+
+    assert store.get_cumulative_groups(now) == []
+
+
 def test_grouped_vllm_hit_rate_uses_per_series_counter_deltas() -> None:
     store = MetricStore()
     now = datetime.now()

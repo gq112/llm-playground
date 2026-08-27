@@ -743,9 +743,18 @@ const ObservabilityModule = {
     _renderLiveStats(metrics) {
         const container = document.getElementById('obs-live-stats');
         if (!container) return;
-        const groups = this._cumulativeGroups.length
+        const candidateGroups = this._cumulativeGroups.length
             ? this._cumulativeGroups
             : [this._legacyCumulativeGroup(metrics)];
+        const groups = candidateGroups.filter((group) => (
+            ['requests', 'input_tokens', 'output_tokens']
+                .some((field) => group.values?.[field] != null)
+        ));
+        if (!groups.length) {
+            container.innerHTML = '';
+            container.style.display = 'none';
+            return;
+        }
         const cardSpecs = [
             {
                 label: 'Cumulative Requests',
