@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>推理指标观测仪表盘</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=20260827-saved-source-delete">
     <link rel="stylesheet" href="/static/css/observability.css?v=20260827-history-ranges-v2">
 </head>
 <body>
@@ -15,9 +15,13 @@
         </a>
         <form class="target-form" id="target-form">
             <label for="target-url">监测服务</label>
-            <select id="target-saved-sources" aria-label="已保存的模型服务">
-                <option value="">已保存服务</option>
-            </select>
+            <span class="target-saved-group">
+                <select id="target-saved-sources" aria-label="已保存的模型服务">
+                    <option value="">已保存服务</option>
+                </select>
+                <button id="target-delete-saved" class="target-delete-saved" type="button" disabled
+                        aria-label="删除选中的已保存服务" title="删除选中的已保存服务">删除</button>
+            </span>
             <input id="target-url" type="url" placeholder="http://host:port" autocomplete="url" required>
             <input id="target-api-key" type="password" placeholder="API key (optional)" autocomplete="off">
             <button type="submit" class="target-connect">Connect</button>
@@ -30,6 +34,6 @@
 
     <main id="observability-view" class="dashboard-main" aria-live="polite"></main>
 
-    <script type="module" src="/static/js/dashboard.js?v=20260827-history-ranges-v2"></script>
+    <script type="module" src="/static/js/dashboard.js?v=20260827-saved-source-delete"></script>
 </body>
 </html>

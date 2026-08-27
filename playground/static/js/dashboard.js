@@ -4,6 +4,7 @@ const targetForm = document.getElementById('target-form');
 const targetUrl = document.getElementById('target-url');
 const targetApiKey = document.getElementById('target-api-key');
 const savedSources = document.getElementById('target-saved-sources');
+const deleteSavedSource = document.getElementById('target-delete-saved');
 const targetStatus = document.getElementById('target-status');
 const themeToggle = document.getElementById('theme-toggle');
 const SAVED_SOURCES_KEY = 'observability-saved-sources';
@@ -25,12 +26,19 @@ function renderSavedSources(selected = '') {
     savedSources.replaceChildren(new Option('已保存服务', ''));
     sources.forEach((url) => savedSources.add(new Option(url, url)));
     savedSources.value = sources.includes(selected) ? selected : '';
+    deleteSavedSource.disabled = !savedSources.value;
 }
 
 function rememberSource(url) {
     const sources = [url, ...getSavedSources().filter((saved) => saved !== url)].slice(0, 12);
     localStorage.setItem(SAVED_SOURCES_KEY, JSON.stringify(sources));
     renderSavedSources(url);
+}
+
+function forgetSource(url) {
+    const sources = getSavedSources().filter((saved) => saved !== url);
+    localStorage.setItem(SAVED_SOURCES_KEY, JSON.stringify(sources));
+    renderSavedSources();
 }
 
 function setStatus(message, state = '') {
@@ -82,14 +90,33 @@ targetForm.addEventListener('submit', async (event) => {
 });
 
 savedSources.addEventListener('change', () => {
+    deleteSavedSource.disabled = !savedSources.value;
     if (!savedSources.value) return;
     targetUrl.value = savedSources.value;
     targetApiKey.value = '';
     targetForm.requestSubmit();
 });
 
+deleteSavedSource.addEventListener('click', () => {
+    const url = savedSources.value;
+    if (!url || !window.confirm(`从已保存服务中删除 ${url}？\n当前监测连接不会中断。`)) return;
+    try {
+        forgetSource(url);
+        const currentUrl = targetUrl.value.trim();
+        setStatus(
+            currentUrl === url ? `Removed saved entry · Polling ${url}/metrics` : `Removed ${url}`,
+            currentUrl === url ? 'connected' : '',
+        );
+    } catch {
+        setStatus('Unable to delete saved source', 'error');
+    }
+});
+
 targetUrl.addEventListener('input', () => {
-    if (savedSources.value && savedSources.value !== targetUrl.value.trim()) savedSources.value = '';
+    if (savedSources.value && savedSources.value !== targetUrl.value.trim()) {
+        savedSources.value = '';
+        deleteSavedSource.disabled = true;
+    }
 });
 
 themeToggle.addEventListener('click', () => {
