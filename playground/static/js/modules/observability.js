@@ -10,7 +10,7 @@ import {
     formatMetricValue,
     getThresholdStatus,
     groupByCategory,
-} from './metrics-registry.js?v=20260826-metric-accuracy';
+} from './metrics-registry.js?v=20260827-history-ranges-v2';
 import { metricsPoller } from './metrics-poller.js';
 
 function displayModelName(modelName = '') {
@@ -77,11 +77,12 @@ class LocalLineChart {
         const xMin = timestamps[0];
         const lastTimestamp = timestamps[timestamps.length - 1];
         const xMax = lastTimestamp > xMin ? lastTimestamp : xMin + 60;
+        const configuredRange = this.options.scales?.y?.range;
         const rawMin = Math.min(...numbers);
         const rawMax = Math.max(...numbers);
         const spread = rawMax - rawMin || Math.max(Math.abs(rawMax) * 0.1, 1);
-        const yMin = rawMin - spread * 0.08;
-        const yMax = rawMax + spread * 0.08;
+        const yMin = Array.isArray(configuredRange) ? configuredRange[0] : rawMin - spread * 0.08;
+        const yMax = Array.isArray(configuredRange) ? configuredRange[1] : rawMax + spread * 0.08;
         const x = (value) => padding.left + ((value - xMin) / (xMax - xMin || 1)) * plotWidth;
         const y = (value) => padding.top + (1 - (value - yMin) / (yMax - yMin || 1)) * plotHeight;
         this._geometry = { padding, plotWidth, width, timestamps, x, y };
@@ -96,7 +97,9 @@ class LocalLineChart {
             ctx.moveTo(padding.left, yPos);
             ctx.lineTo(width - padding.right, yPos);
             ctx.stroke();
-            const label = (yMax - ((yMax - yMin) * step) / 4).toPrecision(3);
+            const tick = yMax - ((yMax - yMin) * step) / 4;
+            const axisFormatter = this.options.axes?.[1]?.values;
+            const label = axisFormatter ? axisFormatter(null, [tick])[0] : tick.toPrecision(3);
             ctx.fillText(label, 3, yPos + 4);
         }
 
@@ -236,18 +239,16 @@ class LocalLineChart {
     }
 }
 
-function chartRenderData(data, pointsPerMinute = 5) {
+function chartRenderData(data, maxPoints = 1200) {
     const [timestamps = [], ...series] = data;
-    if (timestamps.length <= pointsPerMinute) return data;
+    if (timestamps.length <= maxPoints) return data;
 
     const selected = [];
     let lastSlot = null;
+    const start = timestamps[0];
+    const span = Math.max(1, timestamps[timestamps.length - 1] - start);
     timestamps.forEach((timestamp, index) => {
-        const minute = Math.floor(timestamp / 60);
-        const slot = minute * pointsPerMinute + Math.min(
-            pointsPerMinute - 1,
-            Math.floor(((timestamp - minute * 60) / 60) * pointsPerMinute),
-        );
+        const slot = Math.min(maxPoints - 1, Math.floor(((timestamp - start) / span) * maxPoints));
         const hasValue = series.some((values) => Number.isFinite(values[index]));
         if (slot !== lastSlot) {
             selected.push({ index, hasValue });
@@ -288,6 +289,9 @@ const ObservabilityModule = {
     _liveHistory: [],
     _liveCharts: [],
     _liveFetchInProgress: false,
+    _liveHistoryPendingRefresh: false,
+    _liveHistoryLastFetchAt: 0,
+    _liveSeconds: 300,
     _cumulativeGroups: [],
     _cumulativeTtlSeconds: 300,
     _currentModelName: '',
@@ -307,7 +311,7 @@ const ObservabilityModule = {
         }
 
         try {
-            const response = await fetch('/static/templates/observability.html');
+            const response = await fetch('/static/templates/observability.html?v=20260827-history-ranges-v2');
             if (!response.ok) throw new Error(`Failed to load template: ${response.status}`);
 
             const html = await response.text();
@@ -388,6 +392,29 @@ const ObservabilityModule = {
 
         const clearBtn = document.getElementById('obs-clear-btn');
         if (clearBtn) clearBtn.addEventListener('click', () => this._clearDemo());
+
+        const liveRange = document.getElementById('obs-live-range');
+        if (liveRange) {
+            try {
+                const savedRange = window.localStorage.getItem('observability_live_range_seconds');
+                if (savedRange && liveRange.querySelector(`option[value="${savedRange}"]`)) {
+                    this._liveSeconds = Number.parseInt(savedRange, 10);
+                }
+            } catch {
+                // Storage can be unavailable in privacy-restricted browser contexts.
+            }
+            liveRange.value = String(this._liveSeconds);
+            liveRange.addEventListener('change', () => {
+                this._liveSeconds = Number.parseInt(liveRange.value, 10) || 300;
+                try {
+                    window.localStorage.setItem('observability_live_range_seconds', String(this._liveSeconds));
+                } catch {
+                    // The range still applies for the current page when storage is unavailable.
+                }
+                this._liveHistoryLastFetchAt = 0;
+                this._refreshLiveHistory(true);
+            });
+        }
 
         const exportBtn = document.getElementById('obs-export-btn');
         if (exportBtn) exportBtn.addEventListener('click', () => this._exportJSON());
@@ -572,8 +599,7 @@ const ObservabilityModule = {
             ['observability:generation_token_rate', 'Decode Throughput', 'number', 'tok/s'],
             ['observability:total_token_rate', 'Total Token Rate', 'number', 'tok/s'],
             ['num_running_reqs', 'Running Requests', 'integer'],
-            ['observability:sglang_cache_hit_rate', 'Cache Hit Rate', 'percent'],
-            ['cached_tokens', 'KV Cache Hits', 'integer', 'tokens'],
+            ['observability:sglang_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
             ['observability:kv_evictions_per_sample', 'KV Evictions / Sample', 'integer', 'tokens'],
             ['spec_num_steps', 'Speculative Steps', 'integer'],
             ['spec_num_draft_tokens', 'Draft Tokens / Step', 'integer'],
@@ -600,7 +626,6 @@ const ObservabilityModule = {
             [metrics['vllm:prefix_cache_hit_rate']
                 ? 'prefix_cache_hit_rate'
                 : 'observability:prefix_cache_hit_rate', 'KV Cache Hit Rate', 'percent'],
-            ['prefix_cache_hits', 'KV Cache Hits', 'integer', 'tokens'],
             ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time Avg', 'duration_ms', null, 'avg'],
             ['kv_block_idle_before_evict_seconds', 'Eviction Idle Time P90', 'duration_ms', null, 'p90'],
             ['observability:spec_acceptance_rate', 'Draft Acceptance Rate', 'percent'],
@@ -663,12 +688,23 @@ const ObservabilityModule = {
         this._refreshLiveHistory();
     },
 
-    async _refreshLiveHistory() {
-        if (this._liveFetchInProgress) return;
+    async _refreshLiveHistory(force = false) {
+        const now = Date.now();
+        const refreshInterval = this._liveSeconds > 3600 ? 15_000 : 2_000;
+        if (!force && now - this._liveHistoryLastFetchAt < refreshInterval) return;
+        if (this._liveFetchInProgress) {
+            this._liveHistoryPendingRefresh = this._liveHistoryPendingRefresh || force;
+            return;
+        }
         this._liveFetchInProgress = true;
+        const requestedSeconds = this._liveSeconds;
         try {
-            this._liveHistory = await metricsPoller.getHistory(null, 300);
-            if (this._latestMetrics && this._liveDescriptors?.length) {
+            const history = await metricsPoller.getHistory(null, requestedSeconds);
+            if (requestedSeconds === this._liveSeconds) {
+                this._liveHistory = history;
+                this._liveHistoryLastFetchAt = Date.now();
+            }
+            if (requestedSeconds === this._liveSeconds && this._latestMetrics && this._liveDescriptors?.length) {
                 this._renderLiveStats(this._latestMetrics);
                 this._buildLiveCharts();
             }
@@ -676,6 +712,10 @@ const ObservabilityModule = {
             // The current statistics remain useful if the history query fails.
         } finally {
             this._liveFetchInProgress = false;
+            if (this._liveHistoryPendingRefresh) {
+                this._liveHistoryPendingRefresh = false;
+                this._refreshLiveHistory(true);
+            }
         }
     },
 
@@ -765,7 +805,7 @@ const ObservabilityModule = {
             'KV Usage', 'KV Cache Usage', 'Queued Requests', 'Waiting Requests',
             'Generation Throughput', 'Input Token Rate', 'Decode Throughput',
             'Total Token Rate', 'Running Requests', 'Radix Cache Hit Rate',
-            'KV Cache Hit Rate', 'KV Cache Hits', 'KV Evictions / Sample',
+            'KV Cache Hit Rate', 'KV Evictions / Sample',
             'Eviction Idle Time Avg', 'Eviction Idle Time P90',
             'Prefix Cache Hit Rate', 'Draft Acceptance Rate', 'TTFT Avg', 'TTFT P90', 'TTFT P99',
             'TPOT Avg', 'TPOT P90', 'TPOT P99', 'E2E Latency Avg', 'E2E Latency P90', 'E2E Latency P99',
@@ -789,7 +829,7 @@ const ObservabilityModule = {
             'Decode Throughput', 'Input Token Rate',
             'Running Requests', 'Waiting Requests', 'Queued Requests',
             'Mean Accepted Length', 'Accepted Length', 'Token Usage (tokens)', 'Token Usage (%)', 'Cache Usage',
-            'Radix Cache Hit Rate', 'KV Cache Hit Rate', 'KV Cache Hits',
+            'Radix Cache Hit Rate', 'KV Cache Hit Rate',
             'KV Evictions / Sample',
             'Eviction Idle Time Avg', 'Eviction Idle Time P90',
         ];
@@ -799,18 +839,18 @@ const ObservabilityModule = {
     },
 
     _liveWindowStats(descriptor) {
-        const now = Date.now();
-        const fiveMinute = this._liveHistory
-            .map((point) => point[descriptor.historyKey])
-            .filter((value) => Number.isFinite(value));
         const samples = this._liveHistory
-            .filter((point) => now - new Date(point.timestamp).getTime() <= 60_000)
             .map((point) => point[descriptor.historyKey])
             .filter((value) => Number.isFinite(value));
         return {
             average: samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : null,
-            peak: fiveMinute.length ? Math.max(...fiveMinute) : null,
+            peak: samples.length ? Math.max(...samples) : null,
         };
+    },
+
+    _liveRangeLabel() {
+        const range = document.getElementById('obs-live-range');
+        return range?.selectedOptions?.[0]?.textContent || 'Last 5 minutes';
     },
 
     _labelValueFromLabels(labels = '', keys = []) {
@@ -871,8 +911,9 @@ const ObservabilityModule = {
 
         const chartMetrics = this._overviewStatDescriptors(this._liveDescriptors)
             .filter((descriptor) => this._liveHistory.some((point) => Number.isFinite(point[descriptor.historyKey])));
+        const rangeLabel = this._liveRangeLabel();
         container.innerHTML = chartMetrics.map((descriptor, index) =>
-            `<div class="obs-live-chart"><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)} · last 5 min</span><div id="obs-live-chart-${index}"></div></div>`
+            `<div class="obs-live-chart"><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)} · ${this._escapeHtml(rangeLabel)}</span><div id="obs-live-chart-${index}"></div></div>`
         ).join('');
         const colors = ['#60a5fa', '#34d399', '#f59e0b', '#a78bfa', '#f472b6', '#22d3ee', '#fb7185', '#84cc16'];
         if (!chartMetrics.length) {
@@ -917,12 +958,12 @@ const ObservabilityModule = {
                     const label = percentileLabel(descriptor);
                     return `<span><i style="--legend-color:${latencyColors[label]}"></i>${label}</span>`;
                 }).join('')}</div>`
-                : `<div class="obs-live-chart-meta"><span>60s avg ${formatMetricValue(average, primaryDescriptor.format, primaryDescriptor.unit)}</span><span>peak ${formatMetricValue(peak, primaryDescriptor.format, primaryDescriptor.unit)}</span></div>`;
+                : `<div class="obs-live-chart-meta"><span>range avg ${formatMetricValue(average, primaryDescriptor.format, primaryDescriptor.unit)}</span><span>peak ${formatMetricValue(peak, primaryDescriptor.format, primaryDescriptor.unit)}</span></div>`;
             return `<article class="obs-live-chart" style="--chart-accent:${accent}">
                 <div class="obs-live-chart-head">
                     <div>
                         <span class="obs-live-chart-title">${this._escapeHtml(chart.title)}</span>
-                        <span class="obs-live-chart-window">last 5 min</span>
+                        <span class="obs-live-chart-window">${this._escapeHtml(rangeLabel)}</span>
                     </div>
                     ${chart.latency ? '' : `<strong>${formatMetricValue(current, primaryDescriptor.format, primaryDescriptor.unit)}</strong>`}
                 </div>
@@ -938,6 +979,15 @@ const ObservabilityModule = {
             const values = chart.descriptors.map((descriptor) =>
                 this._liveHistory.map((point) => point[descriptor.historyKey] ?? null));
             const entry = this._latestMetrics?.[chart.descriptors[0].key];
+            const isPercent = chart.descriptors.every((descriptor) => descriptor.format === 'percent');
+            const yAxis = {
+                stroke: '#888',
+                grid: { stroke: 'rgba(255,255,255,0.06)' },
+                ...(isPercent ? {
+                    size: 52,
+                    values: (_uplot, ticks) => ticks.map((value) => `${Math.round(value * 100)}%`),
+                } : {}),
+            };
             try {
                 this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
@@ -950,8 +1000,8 @@ const ObservabilityModule = {
                             width: 1,
                         };
                     })],
-                    axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
-                    scales: { x: { time: true } },
+                    axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, yAxis],
+                    scales: { x: { time: true }, ...(isPercent ? { y: { range: [0, 1] } } : {}) },
                     tooltip: {
                         title: chart.title,
                         modelName: this._modelNameFromLabels(entry?.labels),
@@ -961,48 +1011,6 @@ const ObservabilityModule = {
                         },
                     },
                 }, [timestamps, ...values], host));
-            } catch (error) {
-                host.textContent = `Chart unavailable: ${error.message}`;
-            }
-        });
-        return;
-
-        container.innerHTML = chartMetrics.map((descriptor, index) => {
-            const current = this._liveValue(descriptor, this._latestMetrics?.[descriptor.key]);
-            const { average, peak } = this._liveWindowStats(descriptor);
-            return `<article class="obs-live-chart" style="--chart-accent:${colors[index % colors.length]}">
-                <div class="obs-live-chart-head">
-                    <div>
-                        <span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)}</span>
-                        <span class="obs-live-chart-window">最近 5 分钟</span>
-                    </div>
-                    <strong>${formatMetricValue(current, descriptor.format, descriptor.unit)}</strong>
-                </div>
-                <div class="obs-live-chart-canvas" id="obs-live-chart-${index}"></div>
-                <div class="obs-live-chart-meta"><span>60 秒均值 ${formatMetricValue(average, descriptor.format, descriptor.unit)}</span><span>峰值 ${formatMetricValue(peak, descriptor.format, descriptor.unit)}</span></div>
-            </article>`;
-        }).join('');
-        if (this._liveHistory.length === 0) return;
-
-        chartMetrics.forEach((descriptor, index) => {
-            const host = document.getElementById(`obs-live-chart-${index}`);
-            if (!host) return;
-            const timestamps = this._liveHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
-            const values = this._liveHistory.map((point) => point[descriptor.historyKey] ?? null);
-            const entry = this._latestMetrics?.[descriptor.key];
-            try {
-                this._liveCharts.push(createLineChart({
-                    width: Math.max(120, host.parentElement.clientWidth - 18),
-                    height: 220,
-                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: colors[index], width: 1 }],
-                    axes: [{ stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }, { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } }],
-                    scales: { x: { time: true } },
-                    tooltip: {
-                        title: descriptor.label,
-                        modelName: this._currentModelName || this._modelNameFromLabels(entry?.labels),
-                        formatter: (value) => formatMetricValue(value, descriptor.format, descriptor.unit),
-                    },
-                }, [timestamps, values], host));
             } catch (error) {
                 host.textContent = `Chart unavailable: ${error.message}`;
             }

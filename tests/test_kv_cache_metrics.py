@@ -96,6 +96,27 @@ sglang:evicted_tokens_total 42
     assert parsed["sglang:evicted_tokens"]["value"] == 42
 
 
+def test_histogram_percentiles_match_prometheus_interpolation_rules() -> None:
+    percentiles = MetricStore._percentiles([
+        (1.0, 80),
+        (2.0, 79),  # Non-monotonic scrape noise is repaired to the previous count.
+        (3.0, 100),
+        (float("inf"), 100),
+    ])
+
+    assert percentiles["p90"] == pytest.approx(2.5)
+    assert percentiles["p99"] == pytest.approx(2.95)
+
+
+@pytest.mark.parametrize("buckets", [
+    [(1.0, 1)],
+    [(1.0, 1), (2.0, 2)],
+    [(1.0, 0), (float("inf"), 0)],
+])
+def test_histogram_percentiles_reject_incomplete_or_empty_buckets(buckets: list) -> None:
+    assert MetricStore._percentiles(buckets) == {}
+
+
 def test_cumulative_metrics_are_grouped_by_model_and_engine() -> None:
     store = MetricStore(cumulative_ttl_seconds=300)
     now = datetime.now()
@@ -276,6 +297,24 @@ def test_history_uses_eviction_delta_for_each_sample() -> None:
     assert derived["observability:kv_evictions_per_sample"] == 4
 
 
+def test_history_merges_dense_recent_and_sparse_long_term_samples() -> None:
+    store = MetricStore(
+        interval=1,
+        history_size=2,
+        history_retention_seconds=3600,
+        archive_interval_seconds=30,
+    )
+    now = datetime.now()
+    for offset in (0, 10, 30, 60):
+        store._append_snapshot(now + timedelta(seconds=offset), {"metric": float(offset)})
+
+    history = store.get_history(now=now + timedelta(seconds=60))
+    assert [point["metric"] for point in history] == [0, 30, 60]
+
+    recent = store.get_history(45, now=now + timedelta(seconds=60))
+    assert [point["metric"] for point in recent] == [30, 60]
+
+
 def test_histogram_interval_survives_one_rank_counter_reset() -> None:
     store = MetricStore()
     now = datetime.now()
@@ -316,3 +355,4 @@ vllm:time_to_first_token_seconds_count{model_name="model-a",rank="1"} 110
     histogram = store.metrics["vllm:time_to_first_token_seconds"]
     assert histogram["avg"] == pytest.approx(0.5)
     assert histogram["p90"] == pytest.approx(0.9)
+    assert histogram["p99"] == pytest.approx(0.99)

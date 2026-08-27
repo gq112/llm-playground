@@ -280,6 +280,51 @@
     color: var(--text-secondary);
 }
 
+.obs-live-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.obs-live-range-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-color));
+    border-radius: 8px;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--bg-primary) 86%, var(--card-bg));
+}
+
+.obs-live-range-control select {
+    min-width: 132px;
+    border: 0;
+    outline: 0;
+    color: var(--text-primary);
+    background: transparent;
+    font: 600 .72rem var(--font-family, system-ui, sans-serif);
+    cursor: pointer;
+}
+
+.obs-live-range-control option {
+    color: var(--text-primary);
+    background: var(--bg-primary);
+}
+
+@media (max-width: 720px) {
+    .obs-live-heading {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .obs-live-controls {
+        justify-content: flex-start;
+    }
+}
+
 .obs-live-frequency {
     color: var(--success-color, #22c55e);
     font: 600 .72rem var(--font-mono, monospace);

@@ -32,9 +32,25 @@
             <div class="obs-live-heading">
                 <div>
                     <h3>实时推理态势</h3>
-                    <p>核心指标优先以趋势图展示；包含当前值、60 秒均值与 5 分钟峰值</p>
+                    <p>核心指标优先以趋势图展示；均值与峰值跟随所选时间范围</p>
                 </div>
-                <span id="obs-live-frequency" class="obs-live-frequency">Updating…</span>
+                <div class="obs-live-controls">
+                    <label class="obs-live-range-control">
+                        <span aria-hidden="true">◷</span>
+                        <select id="obs-live-range" aria-label="Trend time range">
+                            <option value="300">Last 5 minutes</option>
+                            <option value="900">Last 15 minutes</option>
+                            <option value="1800">Last 30 minutes</option>
+                            <option value="3600">Last 1 hour</option>
+                            <option value="10800">Last 3 hours</option>
+                            <option value="21600">Last 6 hours</option>
+                            <option value="43200">Last 12 hours</option>
+                            <option value="86400">Last 24 hours</option>
+                            <option value="172800">Last 2 days</option>
+                        </select>
+                    </label>
+                    <span id="obs-live-frequency" class="obs-live-frequency">Updating…</span>
+                </div>
             </div>
             <div id="obs-live-stats" class="obs-live-stats"></div>
             <div id="obs-live-charts" class="obs-live-charts"></div>

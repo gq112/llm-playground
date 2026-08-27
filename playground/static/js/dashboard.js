@@ -1,4 +1,4 @@
-import ObservabilityModule from './modules/observability.js?v=20260826-metric-accuracy';
+import ObservabilityModule from './modules/observability.js?v=20260827-history-ranges-v2';
 
 const targetForm = document.getElementById('target-form');
 const targetUrl = document.getElementById('target-url');

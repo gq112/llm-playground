@@ -86,9 +86,13 @@ class MetricStore:
         self,
         interval: float = 2.0,
         history_size: int = 8640,
+        history_retention_seconds: float = 172800.0,
+        archive_interval_seconds: float = 30.0,
         cumulative_ttl_seconds: float = 300.0,
     ):
         self.interval = max(1.0, min(interval, 60.0))
+        self.history_retention_seconds = max(300.0, history_retention_seconds)
+        self.archive_interval_seconds = max(self.interval, archive_interval_seconds)
         self.cumulative_ttl_seconds = max(1.0, cumulative_ttl_seconds)
         self.target_url: Optional[str] = None
         self.api_key: Optional[str] = None
@@ -98,6 +102,9 @@ class MetricStore:
         self._histogram_series_state: Dict[tuple, float] = {}
         self._latest_histogram_intervals: Dict[str, float] = {}
         self.history: deque = deque(maxlen=history_size)
+        archive_size = math.ceil(self.history_retention_seconds / self.archive_interval_seconds) + 1
+        self.history_archive: deque = deque(maxlen=archive_size)
+        self._last_archive_timestamp: Optional[datetime] = None
         self.last_scrape: Optional[datetime] = None
         self.last_simulated: Optional[datetime] = None
         self._task: Optional[asyncio.Task] = None
@@ -114,6 +121,8 @@ class MetricStore:
         self.api_key = api_key or None
         self.metrics.clear()
         self.history.clear()
+        self.history_archive.clear()
+        self._last_archive_timestamp = None
         self.cumulative_groups.clear()
         self._latest_group_intervals.clear()
         self._histogram_series_state.clear()
@@ -236,6 +245,8 @@ class MetricStore:
             if not sample:
                 continue
             name, labels, value = sample
+            if not math.isfinite(value):
+                continue
             if not name.startswith(("vllm:", "sglang:")):
                 continue
             base = MetricStore._base_name(name)
@@ -529,26 +540,53 @@ class MetricStore:
 
     @staticmethod
     def _percentiles(values: list) -> Dict[str, float]:
+        """Estimate classic-histogram quantiles like Prometheus histogram_quantile.
+
+        Bucket counts are cumulative. Invalid or slightly inconsistent input is
+        repaired to monotonic counts before linear interpolation, matching the
+        behavior that makes PromQL robust to floating-point and scrape noise.
+        """
         values = sorted(values, key=lambda item: item[0])
-        total = values[-1][1] if values else 0
+        if (
+            len(values) < 2
+            or values[-1][0] != float("inf")
+            or any(not math.isfinite(count) or count < 0 for _, count in values)
+        ):
+            return {}
+
+        monotonic = []
+        previous_count = 0.0
+        for limit, count in values:
+            corrected_count = max(previous_count, count)
+            monotonic.append((limit, corrected_count))
+            previous_count = corrected_count
+
+        total = monotonic[-1][1]
         if total <= 0:
             return {}
+
         output = {}
         for name, ratio in (("p50", .5), ("p90", .9), ("p95", .95), ("p99", .99)):
-            threshold, previous_limit, previous_count = total * ratio, 0.0, 0.0
-            for limit, count in values:
+            threshold = total * ratio
+            previous_limit, previous_count = 0.0, 0.0
+            for index, (limit, count) in enumerate(monotonic):
                 if limit == float("inf"):
                     output[name] = previous_limit
                     break
                 if count >= threshold:
-                    fraction = 0 if count == previous_count else (threshold - previous_count) / (count - previous_count)
+                    if index == 0 and limit <= 0:
+                        output[name] = limit
+                        break
+                    bucket_count = count - previous_count
+                    fraction = 0.0 if bucket_count <= 0 else (threshold - previous_count) / bucket_count
                     output[name] = previous_limit + fraction * (limit - previous_limit)
                     break
                 previous_limit, previous_count = limit, count
         return output
 
     def _append_snapshot(self, timestamp: Optional[datetime] = None, values: Optional[Dict[str, float]] = None) -> None:
-        snapshot = {"timestamp": (timestamp or datetime.now()).isoformat()}
+        observed_at = timestamp or datetime.now()
+        snapshot = {"timestamp": observed_at.isoformat()}
         source = values or self.metrics
         for key, entry in source.items():
             if not isinstance(entry, dict):
@@ -563,6 +601,7 @@ class MetricStore:
             if not key.endswith("::interval")
         })
         self.history.append(snapshot)
+        self._archive_snapshot(snapshot, observed_at)
         if values is None:
             for key, entry in list(self.metrics.items()):
                 if not isinstance(entry, dict):
@@ -595,6 +634,41 @@ class MetricStore:
                 for key, value in derived.items()
                 if "::" not in key
             })
+
+    def _archive_snapshot(self, snapshot: Dict[str, Any], observed_at: datetime) -> None:
+        """Keep a sparse 48-hour history without retaining every raw scrape."""
+        if (
+            self._last_archive_timestamp is not None
+            and observed_at >= self._last_archive_timestamp
+            and (observed_at - self._last_archive_timestamp).total_seconds() < self.archive_interval_seconds
+        ):
+            return
+        if self._last_archive_timestamp is not None and observed_at < self._last_archive_timestamp:
+            self.history_archive.clear()
+        self.history_archive.append(snapshot.copy())
+        self._last_archive_timestamp = observed_at
+        cutoff = observed_at - timedelta(seconds=self.history_retention_seconds)
+        while (
+            self.history_archive
+            and datetime.fromisoformat(self.history_archive[0]["timestamp"]) < cutoff
+        ):
+            self.history_archive.popleft()
+
+    def get_history(self, seconds: Optional[float] = None, now: Optional[datetime] = None) -> list:
+        """Return dense recent samples merged with sparse long-term samples."""
+        merged = {
+            point["timestamp"]: point
+            for point in self.history_archive
+        }
+        merged.update({point["timestamp"]: point for point in self.history})
+        points = sorted(merged.values(), key=lambda point: point["timestamp"])
+        if seconds is None:
+            return points
+        cutoff = (now or datetime.now()) - timedelta(seconds=max(seconds, 0))
+        return [
+            point for point in points
+            if datetime.fromisoformat(point["timestamp"]) >= cutoff
+        ]
 
     def _derive_rates(self, snapshot: Dict[str, Any]) -> Dict[str, float]:
         """Derive short-interval cache, token, and spec-decode metrics."""
@@ -708,8 +782,9 @@ class MetricStore:
                 else delta(f"{base}_count")
             )
             if (
-                total_requests is not None
-                and abs(total_requests - bucket_values[-1][1]) > 1e-9
+                total_requests is None
+                or total_requests < 0
+                or not math.isclose(total_requests, bucket_values[-1][1], rel_tol=1e-9, abs_tol=1e-9)
             ):
                 continue
             for bucket_key, _, count in buckets:
@@ -791,6 +866,14 @@ def _configured_poll_interval() -> float:
         return 2.0
 
 
+def _configured_history_retention() -> float:
+    try:
+        return max(300.0, min(float(os.getenv("METRICS_HISTORY_RETENTION_SECONDS", "172800")), 604800.0))
+    except ValueError:
+        logger.warning("Invalid METRICS_HISTORY_RETENTION_SECONDS; using 172800 seconds")
+        return 172800.0
+
+
 def _configured_cumulative_ttl() -> float:
     try:
         return max(30.0, min(float(os.getenv("CUMULATIVE_METRICS_TTL_SECONDS", "300")), 86400.0))
@@ -801,6 +884,7 @@ def _configured_cumulative_ttl() -> float:
 
 store = MetricStore(
     interval=_configured_poll_interval(),
+    history_retention_seconds=_configured_history_retention(),
     cumulative_ttl_seconds=_configured_cumulative_ttl(),
 )
 
@@ -855,6 +939,7 @@ async def all_metrics() -> Dict[str, Any]:
     return {"metrics": store.metrics, "scrape_age_seconds": age, "metric_count": len(store.metrics), "source": source,
             "run_mode": "remote" if store.target_url else "unknown", "backend": backend,
             "scrape_interval_seconds": store.interval,
+            "history_retention_seconds": store.history_retention_seconds,
             "cumulative_groups": store.get_cumulative_groups(),
             "cumulative_ttl_seconds": store.cumulative_ttl_seconds}
 
@@ -862,19 +947,17 @@ async def all_metrics() -> Dict[str, Any]:
 @app.get("/api/vllm/metrics/history")
 async def metrics_history(minutes: Optional[int] = None, seconds: Optional[int] = None) -> list:
     duration = seconds if seconds is not None else (minutes * 60 if minutes is not None else None)
-    if duration is None:
-        return list(store.history)
-    cutoff = datetime.now() - timedelta(seconds=max(duration, 0))
-    return [point for point in store.history if datetime.fromisoformat(point["timestamp"]) >= cutoff]
+    return store.get_history(duration)
 
 
 @app.get("/api/vllm/metrics/history/summary")
 async def history_summary() -> Dict[str, Any]:
-    if not store.history:
+    history = store.get_history()
+    if not history:
         return {"total": 0, "oldest": None, "newest": None, "span_seconds": 0, "oldest_age_seconds": 0}
-    oldest, newest = store.history[0], store.history[-1]
+    oldest, newest = history[0], history[-1]
     old_time, new_time = datetime.fromisoformat(oldest["timestamp"]), datetime.fromisoformat(newest["timestamp"])
-    return {"total": len(store.history), "oldest": oldest["timestamp"], "newest": newest["timestamp"],
+    return {"total": len(history), "oldest": oldest["timestamp"], "newest": newest["timestamp"],
             "span_seconds": round((new_time - old_time).total_seconds(), 1),
             "oldest_age_seconds": round((datetime.now() - old_time).total_seconds(), 1)}
 
@@ -921,6 +1004,8 @@ async def simulate_metrics(request: SimulateMetricsRequest) -> Dict[str, str]:
 async def reset_simulation() -> Dict[str, str]:
     store.metrics.clear()
     store.history.clear()
+    store.history_archive.clear()
+    store._last_archive_timestamp = None
     store.cumulative_groups.clear()
     store._latest_group_intervals.clear()
     store._histogram_series_state.clear()
