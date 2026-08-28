@@ -284,26 +284,88 @@ class LocalLineChart {
     }
 }
 
-function chartRenderData(data, maxPoints = 1200) {
+function chartDisplayBucketSeconds(windowSeconds, plotWidth) {
+    if (windowSeconds <= 300) return 5;
+    if (windowSeconds <= 3600) return 30;
+
+    const targetPoints = Math.max(40, Math.floor(plotWidth / 8));
+    const desiredStep = windowSeconds / targetPoints;
+    return TIME_TICK_STEPS.find((step) => step >= desiredStep)
+        || Math.ceil(desiredStep / 86400) * 86400;
+}
+
+function chartRenderData(data, maxPoints = 1200, bucketSeconds = 0) {
     const [timestamps = [], ...series] = data;
-    if (timestamps.length <= maxPoints) return data;
+    if (timestamps.length === 0) return data;
 
-    const selected = [];
-    let lastSlot = null;
-    const start = timestamps[0];
-    const span = Math.max(1, timestamps[timestamps.length - 1] - start);
-    timestamps.forEach((timestamp, index) => {
-        const slot = Math.min(maxPoints - 1, Math.floor(((timestamp - start) / span) * maxPoints));
-        const hasValue = series.some((values) => Number.isFinite(values[index]));
-        if (slot !== lastSlot) {
-            selected.push({ index, hasValue });
-            lastSlot = slot;
-        } else if (hasValue || !selected[selected.length - 1].hasValue) {
-            selected[selected.length - 1] = { index, hasValue };
-        }
-    });
+    let indexes = timestamps.map((_timestamp, index) => index);
 
-    const indexes = selected.map(({ index }) => index);
+    if (bucketSeconds > 0 && timestamps.length > 1) {
+        const ranges = series.map((values) => {
+            let min = Infinity;
+            let max = -Infinity;
+            values.forEach((value) => {
+                if (!Number.isFinite(value)) return;
+                min = Math.min(min, value);
+                max = Math.max(max, value);
+            });
+            return Number.isFinite(min)
+                ? { min, span: Math.max(max - min, Number.EPSILON) }
+                : null;
+        });
+
+        const buckets = [];
+        let activeBucket = null;
+        timestamps.forEach((timestamp, index) => {
+            const bucket = Math.floor(timestamp / bucketSeconds);
+            if (bucket !== activeBucket) {
+                buckets.push([]);
+                activeBucket = bucket;
+            }
+            buckets[buckets.length - 1].push(index);
+        });
+
+        indexes = buckets.map((bucket, bucketIndex) => {
+            if (bucketIndex === 0) return bucket[0];
+            if (bucketIndex === buckets.length - 1) return bucket[bucket.length - 1];
+
+            let selectedIndex = bucket[bucket.length - 1];
+            let selectedScore = -Infinity;
+            bucket.forEach((index) => {
+                let score = -Infinity;
+                series.forEach((values, seriesIndex) => {
+                    const value = values[index];
+                    const range = ranges[seriesIndex];
+                    if (!Number.isFinite(value) || !range) return;
+                    score = Math.max(score, (value - range.min) / range.span);
+                });
+                if (score >= selectedScore) {
+                    selectedIndex = index;
+                    selectedScore = score;
+                }
+            });
+            return selectedIndex;
+        });
+    }
+
+    if (indexes.length > maxPoints) {
+        const reduced = [];
+        let lastSlot = null;
+        const start = timestamps[indexes[0]];
+        const span = Math.max(1, timestamps[indexes[indexes.length - 1]] - start);
+        indexes.forEach((index) => {
+            const slot = Math.min(maxPoints - 1, Math.floor(((timestamps[index] - start) / span) * maxPoints));
+            const hasValue = series.some((values) => Number.isFinite(values[index]));
+            if (slot !== lastSlot) {
+                reduced.push({ index, hasValue });
+                lastSlot = slot;
+            } else if (hasValue || !reduced[reduced.length - 1].hasValue) {
+                reduced[reduced.length - 1] = { index, hasValue };
+            }
+        });
+        indexes = reduced.map(({ index }) => index);
+    }
+
     return [
         indexes.map((index) => timestamps[index]),
         ...series.map((values) => indexes.map((index) => values[index])),
@@ -311,15 +373,16 @@ function chartRenderData(data, maxPoints = 1200) {
 }
 
 function createLineChart(options, data, target) {
-    const renderData = chartRenderData(data);
-    const timestamps = renderData[0] || [];
-    const actualSpanSeconds = timestamps.length > 1
-        ? Math.max(1, timestamps[timestamps.length - 1] - timestamps[0])
-        : 60;
     const { timeWindowSeconds, ...chartOptions } = options;
+    const rawTimestamps = data[0] || [];
+    const actualSpanSeconds = rawTimestamps.length > 1
+        ? Math.max(1, rawTimestamps[rawTimestamps.length - 1] - rawTimestamps[0])
+        : 60;
     const spanSeconds = Number.isFinite(timeWindowSeconds) ? timeWindowSeconds : actualSpanSeconds;
     const plotWidth = Math.max(1, (chartOptions.width || target.clientWidth || 600) - 66);
-    const lastTimestamp = timestamps[timestamps.length - 1] || Date.now() / 1000;
+    const bucketSeconds = chartDisplayBucketSeconds(spanSeconds, plotWidth);
+    const renderData = chartRenderData(data, 1200, bucketSeconds);
+    const lastTimestamp = rawTimestamps[rawTimestamps.length - 1] || Date.now() / 1000;
     const rangeEnd = Math.max(lastTimestamp, Date.now() / 1000);
     const xRange = [rangeEnd - spanSeconds, rangeEnd];
     const axes = [...(chartOptions.axes || [])];
@@ -342,9 +405,25 @@ function createLineChart(options, data, target) {
             x: { ...(chartOptions.scales?.x || {}), range: xRange },
         },
     };
-    return window.uPlot
+    const chart = window.uPlot
         ? new window.uPlot(normalizedOptions, renderData, target)
         : new LocalLineChart(normalizedOptions, renderData, target);
+    let rawData = data;
+    return {
+        get data() {
+            return rawData;
+        },
+        setData(nextData) {
+            rawData = nextData;
+            chart.setData(chartRenderData(nextData, 1200, bucketSeconds));
+        },
+        setScale(name, scale) {
+            return chart.setScale?.(name, scale);
+        },
+        destroy() {
+            chart.destroy();
+        },
+    };
 }
 
 const ObservabilityModule = {
