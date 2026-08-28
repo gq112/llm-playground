@@ -165,15 +165,23 @@ flowchart TB
 
 ### 5.1 核心 Profiling 指标
 
-以下三项是首版自动判定的核心证据：
+以下三项是首版资源饱和方向的核心证据，SM Occupancy 作为并行度和延迟隐藏能力的必要辅助证据：
 
 | 标准化字段 | DCGM 字段 | 含义 | 用途 |
 | --- | --- | --- | --- |
 | `sm_active` | `DCGM_FI_PROF_SM_ACTIVE` 或对应新版 ratio 字段 | 采样区间内 SM 活跃比例 | 判断 GPU 是否持续执行工作 |
+| `sm_occupancy` | `DCGM_FI_PROF_SM_OCCUPANCY` 或对应新版 ratio 字段 | 驻留 warp 数相对硬件理论上限的比例 | 识别并行度不足、资源约束和延迟隐藏能力变化 |
 | `tensor_active` | `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE` 或对应新版 ratio 字段 | Tensor 管线活跃比例 | 判断矩阵计算压力 |
 | `dram_active` | `DCGM_FI_PROF_DRAM_ACTIVE` 或对应新版 ratio 字段 | 设备显存接口活跃比例 | 判断显存带宽压力 |
 
-`SM_ACTIVE` 缺失时禁止做计算/显存/低利用率分类。Tensor 或 DRAM 缺失时，只能输出能力允许的部分结论，并降低置信度；不能以缺失值代替低活跃度。
+`SM_ACTIVE` 缺失时禁止做计算/显存/低利用率分类。Tensor 或 DRAM 缺失时，只能输出能力允许的部分结论，并降低置信度；不能以缺失值代替低活跃度。SM Occupancy 缺失时仍可识别明显的计算或显存接口饱和趋势，但禁止输出“并行度不足/延迟隐藏不足”结论，并降低置信度。
+
+SM Active 与 SM Occupancy 不能互相替代：
+
+- SM Active 高只表示大部分时间至少有 warp 驻留，等待内存的 warp 也计为 active；
+- SM Occupancy 高表示同时驻留的 warp 较多，但不保证执行管线吞吐更高；
+- 低 Occupancy 会削弱隐藏内存和指令延迟的能力，但也可能是 kernel 使用大量寄存器/共享内存的正常结果；
+- Occupancy 必须与同 GPU 型号、同模型、同引擎、同推理阶段的健康基线比较，不能使用跨架构的统一硬阈值。
 
 ### 5.2 辅助 GPU 指标
 
@@ -266,17 +274,69 @@ flowchart TB
 
 每个状态必须同时输出：结论、置信度、窗口、证据指标、缺失指标、触发条件和建议排查方向。
 
-### 7.2 首版基础规则
+### 7.2 分层判定流程
 
-以下阈值沿用当前实现作为初始值，但必须改为窗口判定并支持配置：
+自动判定不能使用一张平铺的 if/else 阈值表，应按以下顺序执行：
 
-| 状态 | 初始条件 | 说明 |
+```mermaid
+flowchart TB
+    A["数据与能力门禁"] --> B{"样本充分且非启动阶段"}
+    B -- "否" --> B1["warming_up / insufficient_data"]
+    B -- "是" --> C["负载需求与 SM 活跃度"]
+    C --> D{"SM Active 是否持续偏低"}
+    D -- "是" --> D1["区分无请求与有排队的供给不足"]
+    D -- "否" --> E["Tensor / DRAM 资源饱和方向"]
+    E --> F["Occupancy 基线修正"]
+    F --> G["功耗/温度/多卡不均衡修正"]
+    G --> H["结合吞吐、队列、TTFT、TPOT 输出结论与置信度"]
+```
+
+#### 第一层：数据与阶段门禁
+
+- 核心字段覆盖率、有效样本数和时间窗口必须达标；
+- 模型加载、CUDA Graph 捕获和服务 warm-up 阶段只展示曲线，不输出推理瓶颈；
+- 没有真实推理请求时，不把空闲 GPU 标记为性能故障；
+- 能区分 prefill/decode 时分别判定；不能区分时标记为混合阶段并降低置信度。
+
+#### 第二层：负载供给
+
+| 条件 | 输出 | 解释 |
 | --- | --- | --- |
-| GPU 未吃满 | `SM Active Avg < 50%` | 只能说明 GPU 供给不足；需结合请求量、batch、队列、CPU 与 kernel gap 继续定位 |
-| 计算受限倾向 | `SM Active Avg >= 80%`、`Tensor Active Avg >= 65%`、`DRAM Active Avg < 80%` | 适用于以 Tensor 计算为主的模型阶段 |
-| 显存带宽受限倾向 | `SM Active Avg >= 80%`、`DRAM Active Avg >= 80%`、`Tensor Active Avg < 65%` | 高 FB Used 不能替代高 DRAM Active |
-| 混合饱和 | SM、Tensor、DRAM 的 Avg 均达到高阈值 | 需要结合吞吐变化判断优化收益 |
-| 混合/未知 | 不满足以上稳定模式 | 保留证据，不做过度归因 |
+| `SM Active Avg < 50%` 且 waiting/queued 很低 | 需求不足/正常空闲 | 当前没有足够请求把 GPU 吃满，不属于 GPU 资源瓶颈 |
+| `SM Active Avg < 50%` 且 waiting/queued 持续存在 | 执行供给不足倾向 | 优先排查 scheduler、CPU、数据准备、batch、kernel gap；不能仅凭 GPU 指标指定根因 |
+| SM Active 呈短促高峰、窗口 Avg 低且队列存在 | 阶段性空洞 | 使用 P90/P99 与时间轴确认是否存在周期性执行间隙 |
+
+#### 第三层：资源饱和方向
+
+以下阈值沿用当前实现作为首版可配置初值，但必须在有效推理窗口内判断：
+
+| 状态 | 初始条件 | Occupancy 的作用 |
+| --- | --- | --- |
+| 计算受限倾向 | `SM Active Avg >= 80%`、`Tensor Active Avg >= 65%`、`DRAM Active Avg < 80%` | Occupancy 低不能推翻计算饱和结论；只增加“驻留 warp 偏低”修饰，需要 Nsight 判断寄存器/共享内存限制 |
+| 显存带宽受限倾向 | `SM Active Avg >= 80%`、`DRAM Active Avg >= 80%`、`Tensor Active Avg < 65%` | Occupancy 高说明有更多 warp 用于隐藏访存延迟；相对健康基线明显下降时，提高“延迟隐藏不足”风险提示 |
+| 计算与显存混合饱和 | SM、Tensor、DRAM 的 Avg 均达到高阈值 | Occupancy 只描述并发驻留程度，不改变资源同时繁忙的事实 |
+| 混合/未知 | 不满足稳定的资源饱和模式 | 继续检查阶段混合、并行度、功耗、温度和多卡不均衡，不强行分类 |
+
+#### 第四层：Occupancy 修正与独立提示
+
+Occupancy 不直接决定 compute-bound 或 memory-bound，而是生成辅助状态：
+
+| 组合 | 辅助解释 | 允许的结论 |
+| --- | --- | --- |
+| SM Active 高、Occupancy 低、Tensor 高 | 少量 warp 已让计算管线繁忙，可能是高寄存器/共享内存 kernel | 保留计算受限倾向；提示用 Nsight 检查资源约束，不标记“GPU 未吃满” |
+| SM Active 高、Occupancy 低、DRAM 高 | 显存接口繁忙但延迟隐藏能力可能不足 | 显存带宽受限倾向 + 低 Occupancy 风险 |
+| SM Active 中低、Occupancy 低、Tensor/DRAM 均低、队列高 | 并行度、batch 或调度供给不足 | 输出“并行度/执行供给不足倾向”，置信度最高为中 |
+| SM Active 高、Occupancy 高、Tensor/DRAM 均不高 | warp 驻留充分但没有单一管线饱和 | 混合/未知；可能存在依赖、同步或非 Tensor 指令，DCGM 不足以细分 |
+| Occupancy 比健康基线明显下降且吞吐下降/延迟上升 | 工作负载形态或 kernel 资源使用发生变化 | 输出基线偏离告警，不能仅凭该信号确定根因 |
+
+“Occupancy 低”默认采用相对基线定义：当前窗口 `SM Occupancy Avg` 低于相同 GPU/模型/引擎/阶段健康窗口 Avg 的可配置比例。没有健康基线时只展示数值，不使用统一的绝对阈值做主诊断。
+
+#### 第五层：推理阶段修正
+
+- Prefill 往往更容易表现为 Tensor/计算高活跃，需结合输入 token 吞吐和 TTFT；
+- Decode 往往更容易表现为显存访问、KV Cache 和小 batch 特征，不能套用 prefill 的 Occupancy 基线；
+- 连续批处理会混合 prefill 与 decode；无法分段时，主结论使用“混合阶段”，并展示各指标 P90/P99；
+- 只有当 GPU 资源信号与吞吐下降、waiting/queued 堆积或 TTFT/TPOT 恶化同窗出现时，才提高诊断置信度。
 
 ### 7.3 通信观测边界
 
@@ -304,7 +364,7 @@ flowchart TB
 ### 7.5 置信度
 
 - **高：** 核心字段完整、覆盖率达标、稳定条件持续满足，且推理指标存在对应退化；
-- **中：** GPU 证据完整且模式稳定，但缺少推理指标关联或辅助证据；
+- **中：** GPU 证据完整且模式稳定，但缺少推理指标关联、Occupancy 基线或其他辅助证据；
 - **低：** 只有部分辅助指标或模式不稳定；
 - **不可判定：** 核心字段不支持、缺失或样本不足。
 
@@ -405,7 +465,10 @@ flowchart TB
 
 - [ ] 未达到最小样本数时显示 `warming_up`；
 - [ ] 缺少 SM Active 时只能显示 `insufficient_data`；
+- [ ] 缺少 SM Occupancy 时不输出并行度/延迟隐藏不足结论，并降低相关诊断置信度；
 - [ ] 使用可控压测分别构造低利用、计算高压、显存带宽高压场景，并命中预期分类；
+- [ ] 计算高压且 Occupancy 较低时不会被误判为 GPU 未吃满；
+- [ ] 相同 Occupancy 在 prefill、decode 和混合阶段使用各自基线，不跨阶段直接比较；
 - [ ] 短时单点尖峰不会改变主诊断；
 - [ ] 多卡中单卡异常不会被组平均隐藏；
 - [ ] 热/功耗结论必须满足组合证据要求；通信指标不参与首版自动分类；
@@ -469,3 +532,5 @@ flowchart TB
 - [NVIDIA DCGM Profiling](https://docs.nvidia.com/datacenter/dcgm/latest/learn/modules/profiling.html)
 - [NVIDIA DCGM Exporter Metrics](https://docs.nvidia.com/datacenter/dcgm/latest/reference/dcgm-exporter-metrics.html)
 - [NVIDIA DCGM Supported Platforms](https://docs.nvidia.com/datacenter/dcgm/latest/user-guide/getting-started.html)
+- [NVIDIA CUDA C++ Best Practices Guide - Occupancy](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#occupancy)
+- [NVIDIA Nsight Compute Profiling Guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html)
