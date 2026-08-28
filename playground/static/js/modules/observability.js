@@ -18,6 +18,44 @@ function displayModelName(modelName = '') {
     return segments[segments.length - 1] || modelName;
 }
 
+const TIME_TICK_STEPS = [
+    1, 2, 5, 10, 15, 30,
+    60, 120, 300, 600, 900, 1800,
+    3600, 7200, 10800, 21600, 43200, 86400,
+];
+
+function timeTickStep(windowSeconds, plotWidth) {
+    if (windowSeconds <= 300) return 30;
+    if (windowSeconds <= 3600) return 300;
+    const targetCount = Math.max(4, Math.min(10, Math.floor(plotWidth / 96)));
+    const desiredStep = windowSeconds / targetCount;
+    return TIME_TICK_STEPS.find((candidate) => candidate >= desiredStep)
+        || Math.ceil(desiredStep / 86400) * 86400;
+}
+
+function adaptiveTimeTicks(xMin, xMax, plotWidth, windowSeconds = xMax - xMin) {
+    const step = timeTickStep(Math.max(1, windowSeconds), plotWidth);
+    const ticks = [];
+    const firstTick = Math.ceil(xMin / step) * step;
+    for (let tick = firstTick; tick <= xMax; tick += step) ticks.push(tick);
+    if (ticks.length >= 2) return ticks;
+    return xMax > xMin ? [xMin, xMax] : [xMin];
+}
+
+function formatTimeTick(timestamp, spanSeconds) {
+    const date = new Date(timestamp * 1000);
+    if (spanSeconds <= 600) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    if (spanSeconds <= 21600) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `${month}-${day} ${time}`;
+}
+
 class LocalLineChart {
     constructor(options, data, target) {
         this.options = options;
@@ -38,6 +76,13 @@ class LocalLineChart {
 
     setData(data) {
         this.data = data;
+        this._render();
+    }
+
+    setScale(name, { min, max }) {
+        if (name !== 'x' || !Number.isFinite(min) || !Number.isFinite(max)) return;
+        this.options.scales = this.options.scales || {};
+        this.options.scales.x = { ...(this.options.scales.x || {}), range: [min, max] };
         this._render();
     }
 
@@ -74,9 +119,13 @@ class LocalLineChart {
         const padding = { top: 12, right: 14, bottom: 28, left: 52 };
         const plotWidth = Math.max(1, width - padding.left - padding.right);
         const plotHeight = Math.max(1, height - padding.top - padding.bottom);
-        const xMin = timestamps[0];
+        const configuredXRange = this.options.scales?.x?.range;
+        const firstTimestamp = timestamps[0];
         const lastTimestamp = timestamps[timestamps.length - 1];
-        const xMax = lastTimestamp > xMin ? lastTimestamp : xMin + 60;
+        const xMin = Array.isArray(configuredXRange) ? configuredXRange[0] : firstTimestamp;
+        const xMax = Array.isArray(configuredXRange)
+            ? configuredXRange[1]
+            : lastTimestamp > xMin ? lastTimestamp : xMin + 60;
         const configuredRange = this.options.scales?.y?.range;
         const rawMin = Math.min(...numbers);
         const rawMax = Math.max(...numbers);
@@ -103,25 +152,26 @@ class LocalLineChart {
             ctx.fillText(label, 3, yPos + 4);
         }
 
-        const minuteTicks = [];
-        let previousMinute = null;
-        timestamps.forEach((timestamp) => {
-            const minute = Math.floor(timestamp / 60);
-            if (minute !== previousMinute) {
-                minuteTicks.push(timestamp);
-                previousMinute = minute;
-            }
-        });
-        if (minuteTicks.length === 1 && xMax > xMin) minuteTicks.push(xMax);
+        const spanSeconds = xMax - xMin;
+        const timeTicks = adaptiveTimeTicks(xMin, xMax, plotWidth, spanSeconds);
+        const xAxisFormatter = this.options.axes?.[0]?.values;
+        ctx.font = `${spanSeconds <= 300 ? 9 : 10}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
-        minuteTicks.forEach((tick) => {
+        timeTicks.forEach((tick) => {
             const xPos = x(tick);
             ctx.beginPath();
             ctx.moveTo(xPos, padding.top);
             ctx.lineTo(xPos, height - padding.bottom);
             ctx.stroke();
-            const label = new Date(tick * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            ctx.fillText(label, xPos, height - 7);
+            const label = xAxisFormatter
+                ? xAxisFormatter(null, [tick])[0]
+                : formatTimeTick(tick, spanSeconds);
+            const labelWidth = ctx.measureText(label).width;
+            const labelX = Math.max(
+                padding.left + labelWidth / 2,
+                Math.min(width - padding.right - labelWidth / 2, xPos),
+            );
+            ctx.fillText(label, labelX, height - 7);
         });
         ctx.textAlign = 'start';
 
@@ -129,7 +179,6 @@ class LocalLineChart {
             ctx.strokeStyle = series[index + 1]?.stroke || '#648cff';
             ctx.lineWidth = series[index + 1]?.width || 1;
             ctx.beginPath();
-            const points = [];
             let drawing = false;
             row.forEach((value, pointIndex) => {
                 if (!Number.isFinite(value)) {
@@ -138,18 +187,11 @@ class LocalLineChart {
                 }
                 const xPos = x(timestamps[pointIndex]);
                 const yPos = y(value);
-                points.push([xPos, yPos]);
                 if (drawing) ctx.lineTo(xPos, yPos);
                 else ctx.moveTo(xPos, yPos);
                 drawing = true;
             });
             ctx.stroke();
-            ctx.fillStyle = series[index + 1]?.stroke || '#648cff';
-            points.forEach(([xPos, yPos]) => {
-                ctx.beginPath();
-                ctx.arc(xPos, yPos, 2.25, 0, Math.PI * 2);
-                ctx.fill();
-            });
         });
     }
 
@@ -267,7 +309,39 @@ function chartRenderData(data, maxPoints = 1200) {
 
 function createLineChart(options, data, target) {
     const renderData = chartRenderData(data);
-    return window.uPlot ? new window.uPlot(options, renderData, target) : new LocalLineChart(options, renderData, target);
+    const timestamps = renderData[0] || [];
+    const actualSpanSeconds = timestamps.length > 1
+        ? Math.max(1, timestamps[timestamps.length - 1] - timestamps[0])
+        : 60;
+    const { timeWindowSeconds, ...chartOptions } = options;
+    const spanSeconds = Number.isFinite(timeWindowSeconds) ? timeWindowSeconds : actualSpanSeconds;
+    const plotWidth = Math.max(1, (chartOptions.width || target.clientWidth || 600) - 66);
+    const lastTimestamp = timestamps[timestamps.length - 1] || Date.now() / 1000;
+    const rangeEnd = Math.max(lastTimestamp, Date.now() / 1000);
+    const xRange = [rangeEnd - spanSeconds, rangeEnd];
+    const axes = [...(chartOptions.axes || [])];
+    const configuredXAxis = axes[0] || {};
+    axes[0] = {
+        space: spanSeconds <= 3600 ? 42 : 96,
+        splits: (_plot, _axisIndex, min, max) => adaptiveTimeTicks(min, max, plotWidth, spanSeconds),
+        values: (_plot, ticks) => ticks.map((tick) => formatTimeTick(tick, spanSeconds)),
+        ...configuredXAxis,
+    };
+    const series = (chartOptions.series || []).map((entry, index) => index === 0
+        ? entry
+        : { ...entry, points: { ...(entry.points || {}), show: false } });
+    const normalizedOptions = {
+        ...chartOptions,
+        axes,
+        series,
+        scales: {
+            ...(chartOptions.scales || {}),
+            x: { ...(chartOptions.scales?.x || {}), range: xRange },
+        },
+    };
+    return window.uPlot
+        ? new window.uPlot(normalizedOptions, renderData, target)
+        : new LocalLineChart(normalizedOptions, renderData, target);
 }
 
 const ObservabilityModule = {
@@ -298,7 +372,6 @@ const ObservabilityModule = {
     _currentDraftModelName: '',
     _dcgmStatus: null,
     _gpuHistory: [],
-    _gpuInferenceHistory: [],
     _gpuCharts: [],
     _gpuSeconds: 300,
     _gpuSelected: '',
@@ -319,7 +392,7 @@ const ObservabilityModule = {
         }
 
         try {
-            const response = await fetch('/static/templates/observability.html?v=20260827-dcgm-bottleneck-v1');
+            const response = await fetch('/static/templates/observability.html?v=20260828-gpu-layout-v6');
             if (!response.ok) throw new Error(`Failed to load template: ${response.status}`);
 
             const html = await response.text();
@@ -1033,6 +1106,7 @@ const ObservabilityModule = {
                 this._liveCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
                     height: 220,
+                    timeWindowSeconds: this._liveSeconds,
                     series: [{ label: 'Time' }, ...chart.descriptors.map((descriptor, seriesIndex) => {
                         const label = percentileLabel(descriptor);
                         return {
@@ -1069,7 +1143,7 @@ const ObservabilityModule = {
         if (!input || !input.value.trim()) return;
         button.disabled = true;
         if (status) {
-            status.textContent = '正在连接 dcgm-exporter…';
+            status.textContent = '正在连接 GPU 数据源…';
             status.dataset.state = 'pending';
         }
         try {
@@ -1079,11 +1153,10 @@ const ObservabilityModule = {
                 body: JSON.stringify({ url: input.value.trim() }),
             });
             const result = await response.json();
-            if (!response.ok) throw new Error(result.detail || '无法保存 DCGM 数据源');
+            if (!response.ok) throw new Error(result.detail || '无法保存 GPU 数据源');
             input.value = result.url;
             if (status) status.textContent = `正在采集 ${result.url}/metrics`;
             this._gpuHistory = [];
-            this._gpuInferenceHistory = [];
             this._gpuHistoryLastFetchAt = 0;
         } catch (error) {
             if (status) {
@@ -1097,13 +1170,12 @@ const ObservabilityModule = {
 
     async _disconnectDcgm() {
         const url = this._dcgmStatus?.url;
-        if (url && !window.confirm(`断开并删除 DCGM 数据源 ${url}？\n已采集的 GPU 历史数据也会被清除。`)) return;
+        if (url && !window.confirm(`断开并删除 GPU 数据源 ${url}？\n已采集的 GPU 历史数据也会被清除。`)) return;
         try {
             const response = await fetch('/api/observability/dcgm-target', { method: 'DELETE' });
-            if (!response.ok) throw new Error('无法删除 DCGM 数据源');
+            if (!response.ok) throw new Error('无法删除 GPU 数据源');
             this._dcgmStatus = { configured: false, available: false, gpus: [], summary: {} };
             this._gpuHistory = [];
-            this._gpuInferenceHistory = [];
             this._gpuSelected = '';
             const input = document.getElementById('obs-dcgm-url');
             if (input) input.value = '';
@@ -1155,7 +1227,7 @@ const ObservabilityModule = {
         const noData = document.getElementById('obs-gpu-no-data');
         if (statusEl) {
             if (!status.configured) {
-                statusEl.textContent = '尚未配置 DCGM 数据源';
+                statusEl.textContent = '尚未配置 GPU 数据源';
                 statusEl.dataset.state = 'idle';
             } else if (status.available) {
                 statusEl.textContent = `已连接 ${status.url}/metrics · ${status.gpu_count} GPUs`;
@@ -1175,10 +1247,10 @@ const ObservabilityModule = {
             noData.style.display = status.available ? 'none' : '';
             const title = noData.querySelector('h3');
             const copy = noData.querySelector('p');
-            if (title) title.textContent = status.configured ? 'DCGM 指标不可用' : '尚无 GPU 指标';
+            if (title) title.textContent = status.configured ? 'GPU 指标不可用' : '尚无 GPU 指标';
             if (copy) copy.textContent = status.configured
                 ? '确认仪表盘所在机器能够访问该地址，并检查 exporter 是否暴露所需指标。'
-                : '配置 dcgm-exporter 地址后，这里会展示 GPU0–GPU7 的瓶颈判断和历史曲线。';
+                : '配置 GPU 指标地址后，这里会展示 GPU0–GPU7 的瓶颈判断和历史曲线。';
         }
 
         const missing = document.getElementById('obs-gpu-missing');
@@ -1189,7 +1261,7 @@ const ObservabilityModule = {
         if (missing) {
             missing.style.display = status.available && missingFields.length ? '' : 'none';
             missing.innerHTML = missingFields.length
-                ? `<strong>诊断信号不完整：</strong>缺少 ${missingFields.map((field) => missingNames[field] || field).join('、')}。请在 dcgm-exporter customMetrics 中启用对应字段。`
+                ? `<strong>诊断信号不完整：</strong>缺少 ${missingFields.map((field) => missingNames[field] || field).join('、')}。请在 GPU 采集服务中启用对应指标。`
                 : '';
         }
 
@@ -1214,10 +1286,10 @@ const ObservabilityModule = {
             ['显存已用', summary.fb_used_mib, 'mib'],
             ['总功耗', summary.power_watts, 'watts'],
         ];
-        container.innerHTML = cards.map(([label, value, format]) => `<article class="obs-gpu-summary-card">
+        container.innerHTML = cards.map(([label, value, format]) => `<div class="obs-gpu-summary-item">
             <span>${this._escapeHtml(label)}</span>
             <strong>${this._escapeHtml(this._formatGpuMetric(value, format))}</strong>
-        </article>`).join('');
+        </div>`).join('');
     },
 
     _renderGpuDiagnoses(gpus) {
@@ -1226,28 +1298,36 @@ const ObservabilityModule = {
         const labels = {
             sm_active: 'SM', tensor_active: 'Tensor', dram_active: '显存接口', gpu_util: 'GPU Util',
         };
-        container.innerHTML = gpus.map((gpu) => {
+        if (!gpus.length) {
+            container.replaceChildren();
+            return;
+        }
+        const confidenceNames = { high: '高', medium: '中', low: '低', none: '不可判定' };
+        const rows = gpus.map((gpu) => {
             const diagnosis = gpu.diagnosis || {};
             const metrics = gpu.metrics || {};
             const signals = ['gpu_util', 'sm_active', 'tensor_active', 'dram_active'].map((field) => {
                 const value = metrics[field];
-                return `<div class="obs-gpu-signal">
-                    <span>${labels[field]}</span>
+                return `<div class="obs-gpu-diagnosis-metric">
+                    <span>${this._escapeHtml(labels[field])}</span>
                     <i><b style="width:${Number.isFinite(value) ? Math.max(0, Math.min(100, value * 100)) : 0}%"></b></i>
                     <strong>${this._formatGpuMetric(value, 'percent')}</strong>
                 </div>`;
             }).join('');
-            const confidenceNames = { high: '高', medium: '中', low: '低', none: '不可判定' };
-            return `<article class="obs-gpu-diagnosis ${this._escapeHtml(diagnosis.severity || 'neutral')}">
-                <header>
-                    <div><strong>GPU ${this._escapeHtml(gpu.gpu)}</strong><span>${this._escapeHtml(gpu.model || gpu.device || '')}</span></div>
-                    <em>${this._escapeHtml(diagnosis.label || '等待诊断')}</em>
-                </header>
-                <p>${this._escapeHtml(diagnosis.reason || '')}</p>
-                <div class="obs-gpu-signals">${signals}</div>
-                <footer><span>置信度：${this._escapeHtml(confidenceNames[diagnosis.confidence] || diagnosis.confidence || '--')}</span><span>${this._escapeHtml(gpu.uuid || '')}</span></footer>
-            </article>`;
+            const model = gpu.model || gpu.device || '';
+            const reason = diagnosis.reason || '';
+            return `<div class="obs-gpu-diagnosis-row ${this._escapeHtml(diagnosis.severity || 'neutral')}">
+                <div class="obs-gpu-diagnosis-identity"><strong>GPU ${this._escapeHtml(gpu.gpu)}</strong><small title="${this._escapeHtml(model)}">${this._escapeHtml(model)}</small></div>
+                <em>${this._escapeHtml(diagnosis.label || '等待诊断')}</em>
+                <div class="obs-gpu-diagnosis-metrics">${signals}</div>
+                <p title="${this._escapeHtml(reason)}">${this._escapeHtml(reason)}</p>
+                <span class="obs-gpu-diagnosis-confidence">置信度 ${this._escapeHtml(confidenceNames[diagnosis.confidence] || diagnosis.confidence || '--')}</span>
+            </div>`;
         }).join('');
+        container.innerHTML = `<section class="obs-gpu-diagnosis-panel">
+            <header><div><strong>GPU 瓶颈概览</strong><span>${gpus.length} GPUs</span></div><small>各卡利用率与当前自动判定</small></header>
+            <div class="obs-gpu-diagnosis-list">${rows}</div>
+        </section>`;
     },
 
     async _refreshGpuHistory(force = false) {
@@ -1255,12 +1335,8 @@ const ObservabilityModule = {
         if (!force && Date.now() - this._gpuHistoryLastFetchAt < 1500) return;
         this._gpuHistoryInProgress = true;
         try {
-            const [response, inferenceHistory] = await Promise.all([
-                fetch(`/api/observability/dcgm/history?seconds=${this._gpuSeconds}`),
-                metricsPoller.getHistory(null, this._gpuSeconds),
-            ]);
+            const response = await fetch(`/api/observability/dcgm/history?seconds=${this._gpuSeconds}`);
             if (response.ok) this._gpuHistory = await response.json();
-            this._gpuInferenceHistory = inferenceHistory;
             this._gpuHistoryLastFetchAt = Date.now();
             this._renderGpuDashboard(true);
         } finally {
@@ -1286,7 +1362,13 @@ const ObservabilityModule = {
         if (format === 'watts') return `${value.toFixed(0)} W`;
         if (format === 'mhz') return `${value.toFixed(0)} MHz`;
         if (format === 'celsius') return `${value.toFixed(0)} °C`;
-        if (format === 'gbps') return `${value.toFixed(2)} GB/s`;
+        if (format === 'gbps') {
+            const absolute = Math.abs(value);
+            if (absolute >= 1) return `${value.toFixed(2)} GB/s`;
+            if (absolute >= 1e-3) return `${(value * 1e3).toFixed(2)} MB/s`;
+            if (absolute >= 1e-6) return `${(value * 1e6).toFixed(2)} KB/s`;
+            return `${(value * 1e9).toFixed(0)} B/s`;
+        }
         return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
     },
 
@@ -1312,7 +1394,7 @@ const ObservabilityModule = {
             { title: 'PCIe 吞吐', format: 'gbps', fields: [
                 ['pcie_tx_bytes_per_second', 'PCIe TX'], ['pcie_rx_bytes_per_second', 'PCIe RX'],
             ] },
-            { title: 'NVLink 吞吐', format: 'gbps', fields: [['nvlink_bytes_per_second', 'NVLink']] },
+            { title: 'NVLink 吞吐', format: 'gbps', fields: [['nvlink_total_bytes_per_second', 'NVLink Total']] },
             { title: '辅助引擎利用率', format: 'percent', fields: [
                 ['memory_copy_util', 'Memory Copy'], ['decoder_util', 'Decoder'], ['encoder_util', 'Encoder'],
             ] },
@@ -1353,10 +1435,44 @@ const ObservabilityModule = {
             const values = chart.fields.map(([field]) => this._gpuHistory.map((point) =>
                 transform(point.gpus?.[this._gpuSelected]?.[field], chart.format)));
             const isPercent = chart.format === 'percent';
+            const isFramebuffer = chart.format === 'gib';
+            const isThroughput = chart.format === 'gbps';
+            const framebufferCapacities = isFramebuffer
+                ? this._gpuHistory.map((point) => {
+                    const totalMib = point.gpus?.[this._gpuSelected]?.fb_total_mib;
+                    return Number.isFinite(totalMib) ? totalMib / 1024 : null;
+                }).filter(Number.isFinite)
+                : [];
+            const plottedValues = values.flat().filter(Number.isFinite);
+            const throughputPeak = isThroughput ? Math.max(0, ...plottedValues) : null;
+            const throughputScaleTarget = throughputPeak > 0 ? throughputPeak * 1.1 : 1;
+            const throughputMagnitude = isThroughput
+                ? 10 ** Math.floor(Math.log10(throughputScaleTarget))
+                : null;
+            const throughputNormalized = isThroughput ? throughputScaleTarget / throughputMagnitude : null;
+            const throughputUpperBound = isThroughput
+                ? (throughputNormalized <= 1 ? 1 : throughputNormalized <= 2 ? 2 : throughputNormalized <= 5 ? 5 : 10)
+                    * throughputMagnitude
+                : null;
+            const framebufferUpperBound = isFramebuffer
+                ? Math.ceil(Math.max(
+                    1,
+                    ...framebufferCapacities,
+                    ...plottedValues.map((value) => value * 1.05),
+                ))
+                : null;
+            const yScale = isPercent
+                ? { range: [0, 1] }
+                : isFramebuffer
+                    ? { range: [0, framebufferUpperBound] }
+                    : isThroughput
+                        ? { range: [0, throughputUpperBound] }
+                        : undefined;
             try {
                 this._gpuCharts.push(createLineChart({
                     width: Math.max(120, host.parentElement.clientWidth - 18),
                     height: 220,
+                    timeWindowSeconds: this._gpuSeconds,
                     series: [{ label: 'Time' }, ...chart.fields.map(([, label], seriesIndex) => ({
                         label, stroke: palette[seriesIndex % palette.length], width: 1,
                     }))],
@@ -1365,75 +1481,23 @@ const ObservabilityModule = {
                         {
                             stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' },
                             ...(isPercent ? { size: 52, values: (_plot, ticks) => ticks.map((value) => `${Math.round(value * 100)}%`) } : {}),
+                            ...(isFramebuffer ? {
+                                size: 58,
+                                values: (_plot, ticks) => ticks.map((value) => `${value.toFixed(value >= 100 ? 0 : 1)}`),
+                            } : {}),
+                            ...(isThroughput ? {
+                                size: 78,
+                                values: (_plot, ticks) => ticks.map((value) => this._formatGpuMetric(value, 'gbps')),
+                            } : {}),
                         },
                     ],
-                    scales: { x: { time: true }, ...(isPercent ? { y: { range: [0, 1] } } : {}) },
+                    scales: { x: { time: true }, ...(yScale ? { y: yScale } : {}) },
                     tooltip: {
                         title: chart.title,
                         modelName: `GPU ${this._gpuSelected}`,
                         formatter: (value) => this._formatGpuMetric(value, chart.format),
                     },
                 }, [timestamps, ...values], host));
-            } catch (error) {
-                host.textContent = `Chart unavailable: ${error.message}`;
-            }
-        });
-        this._buildGpuInferenceCharts();
-    },
-
-    _buildGpuInferenceCharts() {
-        const section = document.getElementById('obs-gpu-correlation');
-        const container = document.getElementById('obs-gpu-inference-charts');
-        if (!section || !container) return;
-        const preferredLabels = [
-            'Generation Throughput', 'Decode Throughput', 'Waiting Requests', 'Queued Requests',
-            'TTFT P90', 'TPOT P90',
-        ];
-        const descriptors = preferredLabels
-            .map((label) => this._liveDescriptors?.find((descriptor) => descriptor.label === label))
-            .filter(Boolean)
-            .filter((descriptor, index, items) => items.findIndex((item) => item.historyKey === descriptor.historyKey) === index)
-            .filter((descriptor) => this._gpuInferenceHistory.some((point) =>
-                Number.isFinite(point[descriptor.historyKey])))
-            .slice(0, 4);
-        section.style.display = descriptors.length ? '' : 'none';
-        if (!descriptors.length) {
-            container.replaceChildren();
-            return;
-        }
-        const palette = ['#60a5fa', '#f59e0b', '#f472b6', '#34d399'];
-        container.innerHTML = descriptors.map((descriptor, index) => {
-            const current = this._liveValue(descriptor, this._latestMetrics?.[descriptor.key]);
-            return `<article class="obs-live-chart" style="--chart-accent:${palette[index % palette.length]}">
-                <div class="obs-live-chart-head"><div><span class="obs-live-chart-title">${this._escapeHtml(descriptor.label)}</span><span class="obs-live-chart-window">推理服务 · ${this._escapeHtml(this._gpuRangeLabel())}</span></div><strong>${this._escapeHtml(formatMetricValue(current, descriptor.format, descriptor.unit))}</strong></div>
-                <div class="obs-live-chart-canvas" id="obs-gpu-inference-chart-${index}"></div>
-            </article>`;
-        }).join('');
-        const timestamps = this._gpuInferenceHistory.map((point) => new Date(point.timestamp).getTime() / 1000);
-        descriptors.forEach((descriptor, index) => {
-            const host = document.getElementById(`obs-gpu-inference-chart-${index}`);
-            if (!host) return;
-            const values = this._gpuInferenceHistory.map((point) => point[descriptor.historyKey] ?? null);
-            const isPercent = descriptor.format === 'percent';
-            try {
-                this._gpuCharts.push(createLineChart({
-                    width: Math.max(120, host.parentElement.clientWidth - 18),
-                    height: 220,
-                    series: [{ label: 'Time' }, { label: descriptor.label, stroke: palette[index], width: 1 }],
-                    axes: [
-                        { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } },
-                        {
-                            stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' },
-                            ...(isPercent ? { size: 52, values: (_plot, ticks) => ticks.map((value) => `${Math.round(value * 100)}%`) } : {}),
-                        },
-                    ],
-                    scales: { x: { time: true }, ...(isPercent ? { y: { range: [0, 1] } } : {}) },
-                    tooltip: {
-                        title: descriptor.label,
-                        modelName: this._currentModelName,
-                        formatter: (value) => formatMetricValue(value, descriptor.format, descriptor.unit),
-                    },
-                }, [timestamps, values], host));
             } catch (error) {
                 host.textContent = `Chart unavailable: ${error.message}`;
             }
@@ -1884,6 +1948,7 @@ const ObservabilityModule = {
         const opts = {
             width,
             height,
+            timeWindowSeconds: this._tsSeconds,
             series,
             axes: [
                 { stroke: '#888', grid: { stroke: 'rgba(255,255,255,0.06)' } },
@@ -1931,6 +1996,7 @@ const ObservabilityModule = {
         }
 
         this._uplotChart.setData(newData);
+        this._uplotChart.setScale?.('x', { min: now - this._tsSeconds, max: now });
     },
 
     // -- Latency tab --------------------------------------------------------

@@ -78,7 +78,7 @@
     <div class="obs-tab-content" id="obs-tab-gpu">
         <section class="obs-gpu-source">
             <div>
-                <h3>DCGM Exporter</h3>
+                <h3>GPU 数据源</h3>
                 <p>直接采集节点级 GPU 指标；地址填写 exporter 根地址，例如 <code>http://host:9400</code></p>
             </div>
             <form id="obs-dcgm-form" class="obs-gpu-source-form">
@@ -86,7 +86,7 @@
                 <button class="obs-btn obs-btn-primary" type="submit">连接</button>
                 <button class="obs-btn" id="obs-dcgm-disconnect" type="button">断开</button>
             </form>
-            <span id="obs-dcgm-status" class="obs-gpu-source-status" role="status">尚未配置 DCGM 数据源</span>
+            <span id="obs-dcgm-status" class="obs-gpu-source-status" role="status">尚未配置 GPU 数据源</span>
         </section>
 
         <div class="obs-gpu-toolbar">
@@ -115,16 +115,9 @@
         <div id="obs-gpu-summary" class="obs-gpu-summary"></div>
         <div id="obs-gpu-diagnoses" class="obs-gpu-diagnoses"></div>
         <div id="obs-gpu-charts" class="obs-gpu-charts"></div>
-        <section id="obs-gpu-correlation" class="obs-gpu-correlation" style="display:none">
-            <div class="obs-gpu-correlation-heading">
-                <h3>推理关联</h3>
-                <p>与 GPU 曲线使用相同时间范围，辅助对照吞吐、排队和延迟变化。</p>
-            </div>
-            <div id="obs-gpu-inference-charts" class="obs-gpu-charts"></div>
-        </section>
         <div id="obs-gpu-no-data" class="obs-no-data">
             <h3>尚无 GPU 指标</h3>
-            <p>配置 dcgm-exporter 地址后，这里会展示 GPU0–GPU7 的瓶颈判断和历史曲线。</p>
+            <p>配置 GPU 指标地址后，这里会展示 GPU0–GPU7 的瓶颈判断和历史曲线。</p>
         </div>
     </div>
 

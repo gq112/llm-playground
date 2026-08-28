@@ -20,6 +20,8 @@ DCGM_FI_DEV_POWER_USAGE{gpu="0",UUID="GPU-a"} 410
 DCGM_FI_DEV_DEC_UTIL{gpu="0",UUID="GPU-a"} 12
 DCGM_FI_PROF_PCIE_TX_BYTES{gpu="0",UUID="GPU-a"} 1000000000
 DCGM_FI_PROF_PCIE_RX_BYTES{gpu="0",UUID="GPU-a"} 2000000000
+DCGM_FI_PROF_NVLINK_TX_BYTES{gpu="0",UUID="GPU-a"} 8000000000
+DCGM_FI_PROF_NVLINK_RX_BYTES{gpu="0",UUID="GPU-a"} 12000000000
 DCGM_FI_DEV_GPU_UTIL{gpu="1",UUID="GPU-b",device="nvidia1",modelName="NVIDIA RTX 5090",Hostname="master-1"} 45
 DCGM_FI_PROF_SM_ACTIVE{gpu="1",UUID="GPU-b"} 0.40
 DCGM_FI_PROF_PIPE_TENSOR_ACTIVE{gpu="1",UUID="GPU-b"} 0.20
@@ -40,6 +42,15 @@ def test_dcgm_metrics_are_grouped_and_normalized_per_gpu(tmp_path: Path) -> None
     assert parsed["0"]["metrics"]["fb_usage"] == pytest.approx(0.75)
     assert parsed["0"]["metrics"]["decoder_util"] == pytest.approx(0.12)
     assert parsed["0"]["metrics"]["pcie_total_bytes_per_second"] == 3_000_000_000
+    assert parsed["0"]["metrics"]["nvlink_total_bytes_per_second"] == 20_000_000_000
+
+
+def test_dcgm_nvlink_bandwidth_counter_count_is_not_treated_as_throughput(tmp_path: Path) -> None:
+    parsed = _store(tmp_path).parse_prometheus(
+        'DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL{gpu="0"} 87900\n'
+    )
+
+    assert parsed == {}
 
 
 def test_dcgm_new_ratio_field_names_are_supported(tmp_path: Path) -> None:

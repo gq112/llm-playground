@@ -50,8 +50,8 @@ class DcgmStore:
         "DCGM_FI_DEV_MEMORY_TEMP_CELSIUS": ("memory_temperature_c", "number"),
         "DCGM_FI_PROF_PCIE_TX_BYTES": ("pcie_tx_bytes_per_second", "number"),
         "DCGM_FI_PROF_PCIE_RX_BYTES": ("pcie_rx_bytes_per_second", "number"),
-        "DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL": ("nvlink_bytes_per_second", "number"),
-        "DCGM_FI_DEV_NVLINK_THROUGHPUT_TOTAL": ("nvlink_bytes_per_second", "number"),
+        "DCGM_FI_PROF_NVLINK_TX_BYTES": ("nvlink_tx_bytes_per_second", "number"),
+        "DCGM_FI_PROF_NVLINK_RX_BYTES": ("nvlink_rx_bytes_per_second", "number"),
         "DCGM_FI_DEV_XID_ERRORS": ("xid_error", "number"),
         "DCGM_FI_DEV_XID_ERROR": ("xid_error", "number"),
     }
@@ -224,6 +224,10 @@ class DcgmStore:
             rx = metrics.get("pcie_rx_bytes_per_second")
             if tx is not None or rx is not None:
                 metrics["pcie_total_bytes_per_second"] = (tx or 0.0) + (rx or 0.0)
+            nvlink_tx = metrics.get("nvlink_tx_bytes_per_second")
+            nvlink_rx = metrics.get("nvlink_rx_bytes_per_second")
+            if nvlink_tx is not None or nvlink_rx is not None:
+                metrics["nvlink_total_bytes_per_second"] = (nvlink_tx or 0.0) + (nvlink_rx or 0.0)
         return gpus
 
     @staticmethod
