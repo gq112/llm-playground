@@ -1,4 +1,4 @@
-import ObservabilityModule from './modules/observability.js?v=20260828-chart-ticks-v8';
+import ObservabilityModule from './modules/observability.js?v=20260828-time-window-padding-v9';
 
 const targetForm = document.getElementById('target-form');
 const targetUrl = document.getElementById('target-url');

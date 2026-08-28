@@ -23,6 +23,7 @@ const TIME_TICK_STEPS = [
     60, 120, 300, 600, 900, 1800,
     3600, 7200, 10800, 21600, 43200, 86400,
 ];
+const TIME_WINDOW_PADDING_SECONDS = 300;
 
 function timeTickStep(windowSeconds, plotWidth) {
     if (windowSeconds <= 300) return 30;
@@ -153,8 +154,11 @@ class LocalLineChart {
         }
 
         const spanSeconds = xMax - xMin;
-        const timeTicks = adaptiveTimeTicks(xMin, xMax, plotWidth, spanSeconds);
-        const xAxisFormatter = this.options.axes?.[0]?.values;
+        const xAxis = this.options.axes?.[0] || {};
+        const timeTicks = typeof xAxis.splits === 'function'
+            ? xAxis.splits(null, 0, xMin, xMax)
+            : adaptiveTimeTicks(xMin, xMax, plotWidth, spanSeconds);
+        const xAxisFormatter = xAxis.values;
         ctx.font = `${spanSeconds <= 300 ? 9 : 10}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         timeTicks.forEach((tick) => {
@@ -315,10 +319,11 @@ function createLineChart(options, data, target) {
         : 60;
     const { timeWindowSeconds, ...chartOptions } = options;
     const spanSeconds = Number.isFinite(timeWindowSeconds) ? timeWindowSeconds : actualSpanSeconds;
+    const displaySpanSeconds = spanSeconds + TIME_WINDOW_PADDING_SECONDS;
     const plotWidth = Math.max(1, (chartOptions.width || target.clientWidth || 600) - 66);
     const lastTimestamp = timestamps[timestamps.length - 1] || Date.now() / 1000;
     const rangeEnd = Math.max(lastTimestamp, Date.now() / 1000);
-    const xRange = [rangeEnd - spanSeconds, rangeEnd];
+    const xRange = [rangeEnd - displaySpanSeconds, rangeEnd];
     const axes = [...(chartOptions.axes || [])];
     const configuredXAxis = axes[0] || {};
     axes[0] = {
